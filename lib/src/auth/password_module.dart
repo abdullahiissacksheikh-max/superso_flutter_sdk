@@ -20,10 +20,11 @@ class PasswordModule {
 
   /// `POST /auth/email/forgot-password`
   ///
-  /// Always returns `200` regardless of whether the email is registered, to
-  /// prevent user-enumeration attacks. Treat a success response as "if that
-  /// account exists, a code has been sent" — never as confirmation that the
-  /// address is registered.
+  /// Sends a numeric OTP reset code by email. Always returns `200` regardless
+  /// of whether the email is registered, to prevent user-enumeration attacks.
+  /// Treat a success response as "if that account exists, a code has been
+  /// sent" — never as confirmation that the address is registered. Password
+  /// reset is OTP-only — there is no reset-link flow.
   Future<ApiResponse<void>> forgot(
     String email, {
     ForgotPasswordOptions? options,

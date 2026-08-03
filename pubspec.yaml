@@ -2,7 +2,7 @@ name: superso_flutter_sdk
 description: >-
   Official Flutter SDK for Superso Core: Auth, Database, Storage, Realtime,
   Media, Notifications, Payments and AI behind one strongly-typed client.
-version: 0.3.0+1
+version: 0.3.1
 repository: https://github.com/superso/superso_core
 issue_tracker: https://github.com/superso/superso_core/issues
 documentation: https://docs.superso.io

@@ -67,6 +67,9 @@ class EmailModule {
   }
 
   /// `POST /auth/email/send-verification`
+  ///
+  /// Sends a numeric OTP to [email]. Enterprise v0.3.1: email verification is
+  /// OTP-only — there is no verification-link flow to opt into or out of.
   Future<ApiResponse<void>> sendVerification(String email) {
     return _client.post<void>(
       '/auth/email/send-verification',
@@ -76,6 +79,8 @@ class EmailModule {
   }
 
   /// `POST /auth/email/verify`
+  ///
+  /// Confirms the address by submitting the OTP sent via [sendVerification].
   Future<ApiResponse<void>> verify({
     required String email,
     required String code,

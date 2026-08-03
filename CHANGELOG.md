@@ -2,6 +2,37 @@
 
 All notable changes to `superso_flutter_sdk` are documented in this file.
 
+## 0.3.1
+
+Backend upgrade: Email Verification and Password Reset are now exclusively
+OTP-based across the whole platform (backend, both SDKs, Admin Dashboard).
+See the backend and `supersosdk` changelogs for the full account of what
+changed there.
+
+### Audit — no SDK code changes required
+
+`lib/src/auth` was audited end-to-end against this migration and found to
+already be fully OTP-first, mirroring `supersosdk/src/auth` exactly:
+
+- `EmailModule.sendVerification` / `EmailModule.verify` — always sent and
+  validated a numeric code; there was never a link-based variant anywhere in
+  this package.
+- `PasswordModule.forgot` / `PasswordModule.reset` — `reset()` has always
+  taken a `code` parameter, never a reset token or callback URL.
+
+No `link`, `token`, or callback-URL concept exists anywhere under `lib/src/auth`
+(verified by search). The retired backend flow
+(`POST /auth/email/verify-link`, `AuthSettings.VerificationMethod`) was never
+reachable through this SDK and required no client-side removal.
+
+### Changed
+
+- Doc comments on `EmailModule.sendVerification`/`verify` and
+  `PasswordModule.forgot` now state explicitly that these flows are OTP-only.
+- Version bumped to `0.3.1` to track the platform-wide OTP migration and stay
+  aligned with `supersosdk`, even though this package's public API and
+  behavior are unchanged.
+
 ## 0.3.0+1
 
 Publishability pass. No API changes, no functionality removed.
