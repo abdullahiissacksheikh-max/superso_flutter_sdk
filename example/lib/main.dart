@@ -102,7 +102,8 @@ class _LoginScreenState extends State<LoginScreen> {
     } on AuthenticationError {
       setState(() => _error = 'Incorrect email or password.');
     } on NetworkError {
-      setState(() => _error = 'Could not reach the server. Check your network.');
+      setState(
+          () => _error = 'Could not reach the server. Check your network.');
     } on SupersoError catch (e) {
       setState(() => _error = e.message);
     } finally {

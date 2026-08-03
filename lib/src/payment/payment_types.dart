@@ -148,8 +148,7 @@ enum StripePaymentIntentStatus {
 
   /// Parses a wire value, defaulting to [processing] for anything
   /// unrecognized.
-  static StripePaymentIntentStatus fromWire(String? value) =>
-      values.firstWhere(
+  static StripePaymentIntentStatus fromWire(String? value) => values.firstWhere(
         (v) => v.wireValue == value,
         orElse: () => StripePaymentIntentStatus.processing,
       );
@@ -620,9 +619,7 @@ class StripeCheckoutSession {
   /// Decodes a Checkout Session from JSON.
   factory StripeCheckoutSession.fromJson(Map<String, dynamic> json) =>
       StripeCheckoutSession(
-        id: json['id'] as String? ??
-            json['stripe_session_id'] as String? ??
-            '',
+        id: json['id'] as String? ?? json['stripe_session_id'] as String? ?? '',
         raw: json,
         url: json['url'] as String? ?? json['checkout_url'] as String?,
         status: json['status'] as String?,

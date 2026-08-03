@@ -65,6 +65,24 @@ class WhiteboardPermissionError extends MediaError {
         );
 }
 
+/// Extracts the backend's machine-readable `code` from an error payload.
+///
+/// The platform sends two shapes depending on the endpoint — the error object
+/// directly (`{code, message}`) or nested under `error` — and the shared client
+/// may hand either one through as `details`. Both are checked, so callers never
+/// have to care which endpoint produced the failure.
+String? mediaErrorCode(Object? details) {
+  if (details is! Map<String, dynamic>) return null;
+  final direct = details['code'];
+  if (direct is String) return direct;
+  final nested = details['error'];
+  if (nested is Map<String, dynamic>) {
+    final code = nested['code'];
+    if (code is String) return code;
+  }
+  return null;
+}
+
 /// Wraps a Media call, normalizing failures into this hierarchy.
 Future<T> withMediaErrors<T>(Future<T> Function() operation) async {
   try {
@@ -78,11 +96,7 @@ Future<T> withMediaErrors<T>(Future<T> Function() operation) async {
   } on CancelledError {
     rethrow;
   } on PermissionError catch (error) {
-    final details = error.details;
-    final code = details is Map<String, dynamic>
-        ? (details['error'] as Map<String, dynamic>?)?['code'] as String?
-        : null;
-    if (code == 'WHITEBOARD_DRAW_NOT_PERMITTED') {
+    if (mediaErrorCode(error.details) == 'WHITEBOARD_DRAW_NOT_PERMITTED') {
       throw WhiteboardPermissionError(error.message, error.details);
     }
     throw HostAuthorizationError(error.message, error.details);
@@ -1679,8 +1693,16 @@ class MediaEvent {
   final Map<String, dynamic> raw;
 
   /// The payload as a JSON map, or an empty map when it is not one.
-  Map<String, dynamic> get dataAsMap =>
-      data is Map<String, dynamic> ? data! as Map<String, dynamic> : const {};
+  ///
+  /// The `is` test is parenthesized deliberately: `x is Map<K, V> ? a : b`
+  /// is genuinely ambiguous to the Dart parser, which reads `Map<K, V>?` as a
+  /// nullable type and then fails on the rest of the conditional.
+  Map<String, dynamic> get dataAsMap {
+    final payload = data;
+    return payload is Map<String, dynamic>
+        ? payload
+        : const <String, dynamic>{};
+  }
 
   /// The payload decoded as a participant.
   ///

@@ -151,8 +151,7 @@ class InboxModule {
   Future<ApiResponse<InboxItem>> get(String id) => _item('GET', id, '');
 
   /// `PATCH /notifications/inbox/:id/read`
-  Future<ApiResponse<InboxItem>> read(String id) =>
-      _item('PATCH', id, '/read');
+  Future<ApiResponse<InboxItem>> read(String id) => _item('PATCH', id, '/read');
 
   /// `PATCH /notifications/inbox/:id/unread`
   Future<ApiResponse<InboxItem>> unread(String id) =>
@@ -167,8 +166,7 @@ class InboxModule {
       _item('PATCH', id, '/restore');
 
   /// `PATCH /notifications/inbox/:id/star`
-  Future<ApiResponse<InboxItem>> star(String id) =>
-      _item('PATCH', id, '/star');
+  Future<ApiResponse<InboxItem>> star(String id) => _item('PATCH', id, '/star');
 
   /// `PATCH /notifications/inbox/:id/unstar`
   Future<ApiResponse<InboxItem>> unstar(String id) =>
@@ -237,8 +235,7 @@ class InboxModule {
       () => _client.get<InboxCounts>(
         '/notifications/inbox/count',
         options: RequestOptions(query: <String, Object?>{'user_id': userId}),
-        decoder: (data) =>
-            InboxCounts.fromJson(data as Map<String, dynamic>?),
+        decoder: (data) => InboxCounts.fromJson(data as Map<String, dynamic>?),
       ),
     );
   }
@@ -327,10 +324,10 @@ class InboxModule {
   }
 
   static InboxList _inboxList(Object? data) =>
-      InboxList.fromJson(data as Map<String, dynamic>? ?? const {});
+      InboxList.fromJson(data as Map<String, dynamic>? ?? const <String, dynamic>{});
 
   static InboxItem _inboxItem(Object? data) =>
-      InboxItem.fromJson(data as Map<String, dynamic>? ?? const {});
+      InboxItem.fromJson(data as Map<String, dynamic>? ?? const <String, dynamic>{});
 }
 
 /// Template management.
@@ -396,7 +393,8 @@ class TemplatesModule {
           'body': body,
           if (subject != null) 'subject': subject,
           if (variables != null)
-            'variables': variables.map((v) => v.toJson()).toList(growable: false),
+            'variables':
+                variables.map((v) => v.toJson()).toList(growable: false),
           if (isActive != null) 'is_active': isActive,
         },
         decoder: _template,
@@ -425,7 +423,8 @@ class TemplatesModule {
           if (subject != null) 'subject': subject,
           if (body != null) 'body': body,
           if (variables != null)
-            'variables': variables.map((v) => v.toJson()).toList(growable: false),
+            'variables':
+                variables.map((v) => v.toJson()).toList(growable: false),
           if (isActive != null) 'is_active': isActive,
         },
         decoder: _template,
@@ -444,7 +443,7 @@ class TemplatesModule {
   }
 
   static NotificationTemplate _template(Object? data) =>
-      NotificationTemplate.fromJson(data as Map<String, dynamic>? ?? const {});
+      NotificationTemplate.fromJson(data as Map<String, dynamic>? ?? const <String, dynamic>{});
 }
 
 /// Schedule management.
@@ -581,7 +580,7 @@ class SchedulesModule {
   }
 
   static NotificationSchedule _schedule(Object? data) =>
-      NotificationSchedule.fromJson(data as Map<String, dynamic>? ?? const {});
+      NotificationSchedule.fromJson(data as Map<String, dynamic>? ?? const <String, dynamic>{});
 }
 
 /// Delivery queue inspection.
@@ -657,7 +656,7 @@ class QueueModule {
       () => _client.get<QueueItem>(
         '/notifications/queue/${encodeSegment(id)}',
         decoder: (data) =>
-            QueueItem.fromJson(data as Map<String, dynamic>? ?? const {}),
+            QueueItem.fromJson(data as Map<String, dynamic>? ?? const <String, dynamic>{}),
       ),
     );
   }
@@ -835,7 +834,7 @@ class DevicesModule {
   }
 
   static NotificationDevice _device(Object? data) =>
-      NotificationDevice.fromJson(data as Map<String, dynamic>? ?? const {});
+      NotificationDevice.fromJson(data as Map<String, dynamic>? ?? const <String, dynamic>{});
 }
 
 /// Per-user notification preferences.
@@ -922,8 +921,7 @@ class PreferencesModule {
           if (timezone != null) 'timezone': timezone,
           if (deliveryFrequency != null)
             'delivery_frequency': deliveryFrequency.wireValue,
-          if (soundSettings != null)
-            'sound_settings': soundSettings.wireValue,
+          if (soundSettings != null) 'sound_settings': soundSettings.wireValue,
           if (badgeEnabled != null) 'badge_enabled': badgeEnabled,
         },
         decoder: _preference,
@@ -1008,12 +1006,26 @@ class PreferencesModule {
   static Map<String, dynamic> _map(Object? data) =>
       data as Map<String, dynamic>? ?? const <String, dynamic>{};
 
+  /// Normalizes the several shapes these reference endpoints return.
+  ///
+  /// The documented responses are inconsistent — some send a bare array, some
+  /// wrap it under `items`, and some wrap it under a name specific to the
+  /// endpoint. Rather than hard-code each key, fall back to the first list
+  /// value in the object.
   static List<String> _stringList(Object? data) {
     if (data is List<dynamic>) {
       return data.whereType<String>().toList(growable: false);
     }
     if (data is Map<String, dynamic>) {
-      final items = data['items'] ?? data.values.firstOrNull;
+      var items = data['items'];
+      if (items is! List<dynamic>) {
+        for (final value in data.values) {
+          if (value is List<dynamic>) {
+            items = value;
+            break;
+          }
+        }
+      }
       if (items is List<dynamic>) {
         return items.whereType<String>().toList(growable: false);
       }
@@ -1039,7 +1051,8 @@ class ProvidersModule {
         decoder: (data) {
           final list = data is List<dynamic>
               ? data
-              : (data as Map<String, dynamic>?)?['providers'] as List<dynamic>? ??
+              : (data as Map<String, dynamic>?)?['providers']
+                      as List<dynamic>? ??
                   const <dynamic>[];
           return list
               .whereType<Map<String, dynamic>>()

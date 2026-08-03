@@ -1,12 +1,18 @@
 name: superso_flutter_sdk
 description: >-
-  Official Flutter SDK for Superso Core — a unified backend platform providing
-  Auth, Database, Storage, Realtime, Media, Notifications, Payments and AI
-  through a single strongly-typed client.
-version: 0.3.0
+  Official Flutter SDK for Superso Core: Auth, Database, Storage, Realtime,
+  Media, Notifications, Payments and AI behind one strongly-typed client.
+version: 0.3.0+1
 repository: https://github.com/superso/superso_core
 issue_tracker: https://github.com/superso/superso_core/issues
 documentation: https://docs.superso.io
+
+topics:
+  - backend
+  - sdk
+  - api
+  - realtime
+  - authentication
 
 environment:
   sdk: ">=3.3.0 <4.0.0"
@@ -18,17 +24,18 @@ dependencies:
   # HTTP transport. Chosen over dart:io's HttpClient so the SDK works
   # unchanged on Flutter Web, where dart:io is unavailable.
   http: ^1.2.0
-  # WebSocket transport for the Realtime and Media signalling modules.
-  # web_socket_channel abstracts dart:io vs dart:html, again for Web parity.
-  web_socket_channel: ^2.4.0
+  # MediaType, used to set the Content-Type of multipart upload parts.
+  # A real dependency, not a dev one: lib/src/utils/mime.dart imports it.
+  http_parser: ^4.0.2
   # Value equality for immutable models without hand-written == / hashCode.
   meta: ^1.12.0
+  # WebSocket transport for the Realtime and Media signalling modules.
+  # web_socket_channel abstracts dart:io vs dart:html, again for Web parity.
+  web_socket_channel: ^3.0.3
 
 dev_dependencies:
+  flutter_lints: ^4.0.0
   flutter_test:
     sdk: flutter
-  flutter_lints: ^4.0.0
-  # Mock HTTP client used across the unit test suite.
-  http_parser: ^4.0.2
 
 flutter:

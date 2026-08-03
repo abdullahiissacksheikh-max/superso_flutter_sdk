@@ -1,0 +1,19 @@
+# Dart / Flutter build output. None of this belongs in a published package.
+.dart_tool/
+.packages
+build/
+pubspec.lock
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# Generated documentation
+doc/api/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.log
+
+# macOS
+.DS_Store

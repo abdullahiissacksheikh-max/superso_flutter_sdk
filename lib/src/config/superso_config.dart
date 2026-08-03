@@ -145,8 +145,8 @@ class RetryPolicy {
   /// Computes the delay before attempt number [attempt] (1-based).
   Duration backoffFor(int attempt) {
     if (attempt <= 1) return Duration.zero;
-    final micros = initialBackoff.inMicroseconds *
-        _pow(backoffMultiplier, attempt - 2);
+    final micros =
+        initialBackoff.inMicroseconds * _pow(backoffMultiplier, attempt - 2);
     final capped = micros.clamp(0, maxBackoff.inMicroseconds.toDouble());
     return Duration(microseconds: capped.toInt());
   }

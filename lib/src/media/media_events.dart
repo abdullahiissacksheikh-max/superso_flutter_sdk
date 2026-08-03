@@ -309,8 +309,7 @@ abstract final class MediaRoomEvents {
   static const String breakoutClosed = 'breakout.closed';
 
   /// A participant joined a breakout room.
-  static const String breakoutParticipantJoined =
-      'breakout.participant_joined';
+  static const String breakoutParticipantJoined = 'breakout.participant_joined';
 
   /// A participant left a breakout room.
   static const String breakoutParticipantLeft = 'breakout.participant_left';

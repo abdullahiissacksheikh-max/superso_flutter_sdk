@@ -302,8 +302,7 @@ class StorageBucket {
   final String updatedAt;
 
   @override
-  String toString() =>
-      'StorageBucket(id: $id, name: $name, files: $fileCount, '
+  String toString() => 'StorageBucket(id: $id, name: $name, files: $fileCount, '
       'unlimited: $isUnlimited)';
 }
 
@@ -352,8 +351,8 @@ class StorageFile {
         tags: (json['tags'] as List<dynamic>? ?? const <dynamic>[])
             .whereType<String>()
             .toList(growable: false),
-        metadata:
-            json['metadata'] as Map<String, dynamic>? ?? const <String, dynamic>{},
+        metadata: json['metadata'] as Map<String, dynamic>? ??
+            const <String, dynamic>{},
         isPublic: json['is_public'] as bool? ?? false,
         createdAt: json['created_at'] as String? ?? '',
         updatedAt: json['updated_at'] as String? ?? '',
@@ -580,8 +579,7 @@ class ListFilesResult {
   final int offset;
 
   @override
-  String toString() =>
-      'ListFilesResult(files: ${files.length}, total: $total)';
+  String toString() => 'ListFilesResult(files: ${files.length}, total: $total)';
 }
 
 /// A generic confirmation payload for mutations that do not return the
@@ -841,8 +839,7 @@ class StorageUsage {
         uploadsToday: (json['uploads_today'] as num?)?.toInt() ?? 0,
         bytesUploadedToday:
             (json['bytes_uploaded_today'] as num?)?.toInt() ?? 0,
-        quotaUsedPercent:
-            (json['quota_used_percent'] as num?)?.toDouble() ?? 0,
+        quotaUsedPercent: (json['quota_used_percent'] as num?)?.toDouble() ?? 0,
         hasUnlimitedBucket: json['has_unlimited_bucket'] as bool? ?? false,
         daily: (json['daily'] as List<dynamic>? ?? const <dynamic>[])
             .whereType<Map<String, dynamic>>()

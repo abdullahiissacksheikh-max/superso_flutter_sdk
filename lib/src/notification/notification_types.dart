@@ -709,11 +709,10 @@ class NotificationTemplate {
         createdAt: json['created_at'] as String? ?? '',
         updatedAt: json['updated_at'] as String? ?? '',
         subject: json['subject'] as String?,
-        variables:
-            (json['variables'] as List<dynamic>? ?? const <dynamic>[])
-                .whereType<Map<String, dynamic>>()
-                .map(TemplateVariable.fromJson)
-                .toList(growable: false),
+        variables: (json['variables'] as List<dynamic>? ?? const <dynamic>[])
+            .whereType<Map<String, dynamic>>()
+            .map(TemplateVariable.fromJson)
+            .toList(growable: false),
       );
 
   /// Template identifier.
@@ -857,6 +856,12 @@ class NotificationSchedule {
 
   /// ISO-8601 timestamp the schedule last failed.
   final String? failedAt;
+
+  /// ISO-8601 creation timestamp.
+  final String createdAt;
+
+  /// ISO-8601 last-update timestamp.
+  final String updatedAt;
 
   /// Template variables applied on each run.
   final Map<String, dynamic>? variables;
@@ -1045,8 +1050,7 @@ class NotificationDevice {
   final Map<String, dynamic> raw;
 
   @override
-  String toString() =>
-      'NotificationDevice(id: $id, ${platform.wireValue})';
+  String toString() => 'NotificationDevice(id: $id, ${platform.wireValue})';
 }
 
 /// A user's notification preferences.

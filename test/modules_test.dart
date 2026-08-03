@@ -296,8 +296,8 @@ void main() {
         }),
       );
 
-      final result = await h.superso.media.moderation
-          .mute('s1', 'p1', reason: 'noise');
+      final result =
+          await h.superso.media.moderation.mute('s1', 'p1', reason: 'noise');
 
       expect(
         h.requests.single.url.path,
@@ -660,8 +660,7 @@ void main() {
       addTearDown(h.superso.dispose);
     });
 
-    test('a session seeds the system prompt and accumulates history',
-        () async {
+    test('a session seeds the system prompt and accumulates history', () async {
       var turn = 0;
       final h = harness((_) async {
         turn++;

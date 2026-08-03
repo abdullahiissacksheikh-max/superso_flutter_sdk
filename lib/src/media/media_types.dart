@@ -215,8 +215,7 @@ class MediaSession {
         endedAt: json['ended_at'] as String?,
         archivedAt: json['archived_at'] as String?,
         hostLeftAt: json['host_left_at'] as String?,
-        hostLeaveTimeoutSec:
-            (json['host_leave_timeout_sec'] as num?)?.toInt(),
+        hostLeaveTimeoutSec: (json['host_leave_timeout_sec'] as num?)?.toInt(),
         lastActivityAt: json['last_activity_at'] as String?,
         createdAt: json['created_at'] as String?,
         updatedAt: json['updated_at'] as String?,
@@ -419,8 +418,7 @@ class MediaParticipant {
 
   /// Whether this participant carries moderation authority.
   bool get isPrivileged =>
-      classroomRole?.isPrivileged ??
-      (role == MediaParticipantRole.moderator);
+      classroomRole?.isPrivileged ?? (role == MediaParticipantRole.moderator);
 
   @override
   String toString() =>
@@ -500,8 +498,7 @@ class WhiteboardSession {
       WhiteboardSession(
         id: json['id'] as String? ?? '',
         sessionId: json['session_id'] as String? ?? '',
-        allowParticipantDraw:
-            json['allow_participant_draw'] as bool? ?? false,
+        allowParticipantDraw: json['allow_participant_draw'] as bool? ?? false,
         raw: json,
         projectId: json['project_id'] as String?,
         title: json['title'] as String?,
@@ -688,8 +685,7 @@ class MediaSessionList {
   final int total;
 
   @override
-  String toString() =>
-      'MediaSessionList(${sessions.length} of $total)';
+  String toString() => 'MediaSessionList(${sessions.length} of $total)';
 }
 
 /// A page of participants.
@@ -719,6 +715,5 @@ class MediaParticipantList {
   final int total;
 
   @override
-  String toString() =>
-      'MediaParticipantList(${participants.length} of $total)';
+  String toString() => 'MediaParticipantList(${participants.length} of $total)';
 }

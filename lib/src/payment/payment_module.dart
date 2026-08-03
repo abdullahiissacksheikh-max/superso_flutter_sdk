@@ -262,8 +262,7 @@ class StripeModule {
           'order_id': orderId,
           if (currency != null) 'currency': currency,
           if (customerId != null) 'customer_id': customerId,
-          if (captureMethod != null)
-            'capture_method': captureMethod.wireValue,
+          if (captureMethod != null) 'capture_method': captureMethod.wireValue,
           if (description != null) 'description': description,
           if (metadata != null) 'metadata': metadata,
         },

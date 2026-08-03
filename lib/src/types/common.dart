@@ -121,7 +121,8 @@ class PaginatedResult<T> {
           .map(fromItem)
           .toList(growable: false),
       pagination: Pagination.fromJson(
-        json['pagination'] as Map<String, dynamic>? ?? const <String, dynamic>{},
+        json['pagination'] as Map<String, dynamic>? ??
+            const <String, dynamic>{},
       ),
     );
   }
@@ -167,7 +168,8 @@ enum HttpMethod {
 @immutable
 class RequestOptions {
   /// Creates per-request options.
-  const RequestOptions({this.headers, this.query, this.cancelToken, this.timeout});
+  const RequestOptions(
+      {this.headers, this.query, this.cancelToken, this.timeout});
 
   /// Extra headers merged into this request only.
   final Map<String, String>? headers;

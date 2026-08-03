@@ -217,8 +217,8 @@ class SupersoHttpClient {
       } on SupersoError catch (err) {
         lastError = err;
         final status = err.status;
-        final retryable = status == null ||
-            config.retryPolicy.retryOnStatus.contains(status);
+        final retryable =
+            status == null || config.retryPolicy.retryOnStatus.contains(status);
         if (!retryable || attempt == maxAttempts) rethrow;
       }
     }
@@ -249,7 +249,8 @@ class SupersoHttpClient {
     final encodedBody =
         intercepted.body == null ? null : jsonEncode(intercepted.body);
 
-    config.log(SupersoLogLevel.debug, '${intercepted.method} ${intercepted.url}');
+    config.log(
+        SupersoLogLevel.debug, '${intercepted.method} ${intercepted.url}');
 
     final request = http.Request(intercepted.method, Uri.parse(intercepted.url))
       ..headers.addAll(intercepted.headers);
@@ -374,15 +375,27 @@ class SupersoHttpClient {
     }
     final completer = Completer<S>();
     void onCancel(String reason) {
-      if (!completer.isCompleted) completer.completeError(CancelledError(reason));
+      if (!completer.isCompleted) {
+        completer.completeError(CancelledError(reason));
+      }
     }
 
     token.addListener(onCancel);
-    operation.then((value) {
-      if (!completer.isCompleted) completer.complete(value);
-    }).catchError((Object error, StackTrace stack) {
-      if (!completer.isCompleted) completer.completeError(error, stack);
-    }).whenComplete(() => token.removeListener(onCancel));
+    // The underlying request keeps running after a cancellation — there is no
+    // way to abort an in-flight HTTP call portably — but its result is
+    // discarded, and its error is still consumed here so it never surfaces as
+    // an unhandled async error.
+    unawaited(
+      operation.then((value) {
+        if (!completer.isCompleted) {
+          completer.complete(value);
+        }
+      }).catchError((Object error, StackTrace stack) {
+        if (!completer.isCompleted) {
+          completer.completeError(error, stack);
+        }
+      }).whenComplete(() => token.removeListener(onCancel)),
+    );
     return completer.future;
   }
 

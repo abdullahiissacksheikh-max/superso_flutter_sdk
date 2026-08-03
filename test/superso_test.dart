@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -58,8 +59,10 @@ void main() {
 
     test('resolveUrl joins paths with and without a leading slash', () {
       final config = SupersoConfig(baseUrl: 'https://api.example.test/v1');
-      expect(config.resolveUrl('/auth/me'), 'https://api.example.test/v1/auth/me');
-      expect(config.resolveUrl('auth/me'), 'https://api.example.test/v1/auth/me');
+      expect(
+          config.resolveUrl('/auth/me'), 'https://api.example.test/v1/auth/me');
+      expect(
+          config.resolveUrl('auth/me'), 'https://api.example.test/v1/auth/me');
     });
   });
 
@@ -129,13 +132,45 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 50));
         return ok(null);
       });
-      final token = CancelToken()..cancel('test');
+      final token = CancelToken()..cancel('user navigated away');
 
+      // Exercised through the shared client, which is the layer CancelToken
+      // is wired into; every module routes its requests through it.
       await expectLater(
-        superso.database.documents.list('posts'),
-        throwsA(isA<SupersoError>()),
+        superso.client.get<void>(
+          '/auth/me',
+          options: RequestOptions(cancelToken: token),
+          decoder: (_) {},
+        ),
+        throwsA(
+          isA<CancelledError>().having(
+            (e) => e.message,
+            'message',
+            'user navigated away',
+          ),
+        ),
       );
       expect(token.isCancelled, isTrue);
+      addTearDown(superso.dispose);
+    });
+
+    test('a token cancelled mid-flight aborts an in-progress request',
+        () async {
+      final superso = supersoWith((_) async {
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+        return ok(null);
+      });
+      final token = CancelToken();
+
+      final pending = superso.client.get<void>(
+        '/auth/me',
+        options: RequestOptions(cancelToken: token),
+        decoder: (_) {},
+      );
+      // Cancel after the request is already in flight.
+      Timer(const Duration(milliseconds: 10), () => token.cancel('too slow'));
+
+      await expectLater(pending, throwsA(isA<CancelledError>()));
       addTearDown(superso.dispose);
     });
 
@@ -146,8 +181,7 @@ void main() {
       await expectLater(
         superso.auth.me(),
         throwsA(
-          isA<SupersoError>()
-              .having((e) => e.code, 'code', 'CLIENT_DISPOSED'),
+          isA<SupersoError>().having((e) => e.code, 'code', 'CLIENT_DISPOSED'),
         ),
       );
     });

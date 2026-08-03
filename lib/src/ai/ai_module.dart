@@ -306,7 +306,8 @@ class AIProviderError extends AIError {
     String message, [
     int? status,
     Object? details,
-  ]) : super(message, status: status, code: 'AI_PROVIDER_ERROR', details: details);
+  ]) : super(message,
+            status: status, code: 'AI_PROVIDER_ERROR', details: details);
 }
 
 /// The requested model is unavailable or was rejected by the provider.
@@ -445,7 +446,8 @@ class AIModelsModule {
 
   /// The documented model notes for every provider.
   Map<AIProviderName, String> list() => <AIProviderName, String>{
-        for (final provider in _providers.list()) provider.value: provider.notes,
+        for (final provider in _providers.list())
+          provider.value: provider.notes,
       };
 
   /// The documented model notes for one provider.

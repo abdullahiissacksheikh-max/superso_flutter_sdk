@@ -8,6 +8,7 @@ library;
 import 'dart:async';
 
 import '../client/superso_http_client.dart';
+import '../errors/superso_error.dart';
 import '../interfaces/sdk_module.dart';
 import '../types/common.dart';
 import '../utils/url.dart';
@@ -227,7 +228,11 @@ class RealtimeModule implements SdkModule, Disposable {
   RealtimeModule(this.client)
       : rest = RealtimeRestClient(client),
         _socket = RealtimeSocket(client) {
-    _frameSubscription = _socket.messages.listen(_onFrame);
+    // rawMessages, not messages: this listener exists to route frames into the
+    // module's own streams, and must not itself open a socket. The connection
+    // is opened by connect(), or lazily when a caller subscribes to one of the
+    // public event streams.
+    _frameSubscription = _socket.rawMessages.listen(_onFrame);
     _stateSubscription = _socket.connectionState.listen((state) {
       if (state == RealtimeConnectionState.disconnected) {
         _correlator.rejectAll(

@@ -147,8 +147,38 @@ class RealtimeSocket {
   /// Listening triggers a lazy connect. The stream is a broadcast stream, so
   /// any number of subscribers may listen.
   Stream<Map<String, dynamic>> get messages {
-    unawaited(connect());
+    _connectLazily();
     return _messages.stream;
+  }
+
+  /// Decoded frames, without triggering a connection.
+  ///
+  /// Used for internal wiring — a module that attaches its own listener at
+  /// construction time must not thereby open a socket, or simply building a
+  /// `Superso` instance would dial the network. Consumer-facing APIs use
+  /// [messages], which connects on demand.
+  Stream<Map<String, dynamic>> get rawMessages => _messages.stream;
+
+  /// Starts a connection attempt without surfacing failures to the caller.
+  ///
+  /// A lazy connect has no caller to throw to — the failure is logged and the
+  /// reconnect policy takes over. Letting it escape would become an unhandled
+  /// async error and, in a test, an unrelated failure.
+  void _connectLazily() {
+    if (_disposed ||
+        _state == RealtimeConnectionState.connected ||
+        _state == RealtimeConnectionState.connecting) {
+      return;
+    }
+    unawaited(
+      connect().catchError((Object error) {
+        _client.config.log(
+          SupersoLogLevel.warning,
+          'Realtime: lazy connect failed',
+          error,
+        );
+      }),
+    );
   }
 
   /// Connection state transitions.
@@ -257,23 +287,29 @@ class RealtimeSocket {
   String _buildUrl() {
     final httpUrl = _client.resolveUrl(path);
     final wsUrl = httpUrl.replaceFirst(RegExp('^http'), 'ws');
+
+    final apiKey = _client.getApiKey();
+    // Resolved on every connect, not captured at construction, so a token
+    // acquired or refreshed later is always the one actually used.
+    final accessToken = _client.getAccessToken();
+
     final params = <String, String>{
       // The platform's WebSocket endpoints accept the API key as a query
       // parameter because browsers cannot set custom headers on a WebSocket
       // handshake. Named `api_key` to match the Realtime and Media endpoints.
-      if (_client.getApiKey() case final String key when key.isNotEmpty)
-        'api_key': key,
+      if (apiKey != null && apiKey.isNotEmpty) 'api_key': apiKey,
       // The end-user JWT, when present, is what lets the backend record a real
-      // identity rather than a guest. Resolved on every connect so a token
-      // acquired or refreshed after construction is always the one used.
-      if (_client.getAccessToken() case final String token when token.isNotEmpty)
-        'token': token,
+      // identity rather than a guest.
+      if (accessToken != null && accessToken.isNotEmpty) 'token': accessToken,
       ..._extraQuery,
     };
     if (params.isEmpty) return wsUrl;
+
     final query = params.entries
-        .map((e) =>
-            '${Uri.encodeQueryComponent(e.key)}=${Uri.encodeQueryComponent(e.value)}')
+        .map(
+          (e) => '${Uri.encodeQueryComponent(e.key)}'
+              '=${Uri.encodeQueryComponent(e.value)}',
+        )
         .join('&');
     return '$wsUrl?$query';
   }

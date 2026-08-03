@@ -2,6 +2,70 @@
 
 All notable changes to `superso_flutter_sdk` are documented in this file.
 
+## 0.3.0+1
+
+Publishability pass. No API changes, no functionality removed.
+
+### Fixed — compile errors
+
+- **Parser failure in `media_module.dart` and `realtime_types.dart`.**
+  `data is Map<String, dynamic> ? a : b` is genuinely ambiguous to the Dart
+  parser: it reads `Map<String, dynamic>?` as a nullable type and then fails on
+  the rest of the conditional, cascading into `expected ':'`,
+  `missing_identifier`, and `non_bool_condition`. Both `dataAsMap` getters are
+  now written as blocks with a promoted local.
+- **`realtime_module.dart` used `SupersoError` without importing it.**
+- **`realtime_socket.dart` used pattern-matching (`if (x case final String y
+  when ...)`) inside a map literal.** Rewritten as plain null checks — the
+  behaviour is identical and it removes any dependency on pattern support.
+- **`NotificationSchedule` declared `this.createdAt` / `this.updatedAt` in its
+  constructor with no matching fields.** Fields added.
+- **`notification_module.dart` called `Iterable.firstOrNull`**, which lives in
+  `package:collection`, not `dart:core`. Replaced with an explicit loop, so no
+  new dependency was needed.
+- **`storage_module.dart` called `Stream.whereType`**, which does not exist —
+  `whereType` is on `Iterable`. Replaced with `where` + `map`.
+- **Bare `const {}` literals** replaced with `const <String, dynamic>{}` so
+  inference can never resolve them as a `Set`.
+
+### Fixed — behaviour
+
+- **Constructing `Superso` no longer opens a WebSocket.** `RealtimeModule`
+  wired its internal frame listener to the lazily-connecting `messages` stream,
+  so merely building the SDK dialled the network and produced unhandled async
+  errors. `RealtimeSocket` now exposes `rawMessages` for internal wiring, and
+  lazy connects log their failure instead of throwing into the void.
+- **Cancellation no longer leaks an unhandled error** when a request completes
+  after its `CancelToken` fired.
+
+### Changed — packaging
+
+- `http_parser` moved from `dev_dependencies` to `dependencies`: it is imported
+  from `lib/src/utils/mime.dart`, so it is a real runtime dependency.
+- Package description shortened to 145 characters (pub.dev penalises anything
+  over 180).
+- Added `topics` for pub.dev discoverability, and a `.gitignore` covering
+  `build/`, `.dart_tool/`, and `pubspec.lock` so build output is never
+  published. Existing artifacts removed from the tree.
+- `public_member_api_docs` is still enabled as a lint but is no longer promoted
+  to an error. Documentation completeness is a pub.dev *score* dimension, not a
+  publishability gate, and promoting a style lint to an error breaks
+  `flutter analyze` for any consumer analysing their whole dependency tree.
+  Removed `missing_return` from the error list — it no longer exists in current
+  SDKs and an unrecognised code is itself a warning.
+
+### Fixed — tests
+
+- The cancellation test never passed its token to a request, so it asserted a
+  throw that could not happen. It now exercises `CancelToken` through the
+  shared client, which is the layer the feature lives in, and a second test
+  covers cancelling a request already in flight.
+- `withMediaErrors` and `mapRealtimeRestError` only looked for the backend's
+  error code nested under `error`. The shared client hands the error object
+  through directly for most endpoints, so `WHITEBOARD_DRAW_NOT_PERMITTED` was
+  never matched and surfaced as a generic host-authorization failure. Both now
+  accept either shape.
+
 ## 0.3.0
 
 Initial release of the official Flutter SDK. Version numbering tracks the

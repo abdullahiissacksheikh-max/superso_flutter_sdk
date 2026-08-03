@@ -82,7 +82,8 @@ class CollectionsModule {
         '/database/collections',
         options: parentPath == null
             ? null
-            : RequestOptions(query: <String, Object?>{'parent_path': parentPath}),
+            : RequestOptions(
+                query: <String, Object?>{'parent_path': parentPath}),
         decoder: (data) => (data as List<dynamic>? ?? const <dynamic>[])
             .whereType<Map<String, dynamic>>()
             .map(DatabaseCollection.fromJson)
@@ -314,7 +315,8 @@ class DocumentsModule {
       '/database/collections/${encodeSegment(collection)}'
       '/documents/${encodeSegment(docId)}';
 
-  static DatabaseDocument<Map<String, dynamic>> _documentDecoder(Object? data) =>
+  static DatabaseDocument<Map<String, dynamic>> _documentDecoder(
+          Object? data) =>
       DatabaseDocument<Map<String, dynamic>>.fromJson(
         data as Map<String, dynamic>? ?? const <String, dynamic>{},
         rawData,

@@ -118,10 +118,15 @@ SupersoError mapRealtimeRestError(Object error) {
   String? code;
   var message = error.message;
   if (details is Map<String, dynamic>) {
+    // The platform sends the error object either directly or nested under
+    // `error`, depending on the endpoint. Both shapes are accepted.
     final nested = details['error'];
     if (nested is Map<String, dynamic>) {
       code = nested['code'] as String?;
       message = nested['message'] as String? ?? message;
+    } else {
+      code = details['code'] as String?;
+      message = details['message'] as String? ?? message;
     }
   }
   switch (code) {

@@ -127,7 +127,8 @@ class RealtimeClientInfo {
         projectId: json['project_id'] as String? ?? '',
         authenticated: json['authenticated'] as bool? ?? false,
         settings: RealtimeSettings.fromJson(
-          json['settings'] as Map<String, dynamic>? ?? const <String, dynamic>{},
+          json['settings'] as Map<String, dynamic>? ??
+              const <String, dynamic>{},
         ),
         userId: json['user_id'] as String?,
       );
@@ -194,8 +195,7 @@ class RealtimePresence {
   final String? updatedAt;
 
   @override
-  String toString() =>
-      'RealtimePresence($userId, ${status.wireValue})';
+  String toString() => 'RealtimePresence($userId, ${status.wireValue})';
 }
 
 /// The payload of `GET /v1/realtime/presence/:channel`.
@@ -229,8 +229,7 @@ class RealtimePresenceListResult {
   final int total;
 
   @override
-  String toString() =>
-      'RealtimePresenceListResult($channel, $total present)';
+  String toString() => 'RealtimePresenceListResult($channel, $total present)';
 }
 
 /// The payload of `POST /v1/realtime/publish` and `/broadcast`.
@@ -295,7 +294,8 @@ class DatabaseEventPayload {
       DatabaseEventPayload(
         docId: json['doc_id'] as String? ?? '',
         collection: json['collection'] as String? ?? '',
-        data: json['data'] as Map<String, dynamic>? ?? const <String, dynamic>{},
+        data:
+            json['data'] as Map<String, dynamic>? ?? const <String, dynamic>{},
         version: (json['version'] as num?)?.toInt() ?? 0,
         createdAt: json['created_at'] as String?,
         updatedAt: json['updated_at'] as String?,
@@ -320,8 +320,7 @@ class DatabaseEventPayload {
   final String? updatedAt;
 
   @override
-  String toString() =>
-      'DatabaseEventPayload($collection/$docId, v$version)';
+  String toString() => 'DatabaseEventPayload($collection/$docId, v$version)';
 }
 
 /// The payload of a `database.collection.*` event.
@@ -426,8 +425,16 @@ class RealtimeFrame {
   final int? timestamp;
 
   /// The payload as a JSON map, or an empty map when it is not one.
-  Map<String, dynamic> get dataAsMap =>
-      data is Map<String, dynamic> ? data! as Map<String, dynamic> : const {};
+  ///
+  /// Written as a block rather than a conditional expression because
+  /// `x is Map<K, V> ? a : b` is ambiguous to the Dart parser — it reads
+  /// `Map<K, V>?` as a nullable type and then fails on the rest.
+  Map<String, dynamic> get dataAsMap {
+    final payload = data;
+    return payload is Map<String, dynamic>
+        ? payload
+        : const <String, dynamic>{};
+  }
 
   @override
   String toString() =>
