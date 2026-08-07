@@ -42,6 +42,19 @@ class TemplateError extends NotificationError {
   ]) : super(message, status: status, code: 'TEMPLATE_ERROR', details: details);
 }
 
+/// An event operation failed — event not found, a mapped template slug
+/// doesn't resolve, a duplicate/mismatched channel mapping, or (specific to
+/// this domain) HTTP 422 `event_no_templates` surfaced by `trigger()` for an
+/// event with zero channel mappings.
+class EventError extends NotificationError {
+  /// Creates an event error.
+  const EventError(
+    String message, [
+    int? status,
+    Object? details,
+  ]) : super(message, status: status, code: 'EVENT_ERROR', details: details);
+}
+
 /// Wraps a Notification call, normalizing failures into this hierarchy.
 ///
 /// Shared errors whose meaning does not depend on the module pass through.
@@ -444,6 +457,200 @@ class TemplatesModule {
 
   static NotificationTemplate _template(Object? data) =>
       NotificationTemplate.fromJson(data as Map<String, dynamic>? ?? const <String, dynamic>{});
+}
+
+/// Event management — docs/notification.md "Events".
+///
+/// Two supported creation workflows, both via [create]:
+///   - Workflow A: `create(eventKey: ..., name: ...)` — no `templates`. The
+///     event is created successfully with zero mappings; attach channels
+///     later with [mapTemplates].
+///   - Workflow B: `create(eventKey: ..., name: ..., templates: [...])` —
+///     mapped at creation time.
+/// `templates` is never required by this module or the backend — only
+/// [NotificationModule.trigger] requires at least one mapping to exist, and
+/// throws an [EventError] (HTTP 422, `event_no_templates`) if none do.
+///
+/// Not exposed as `superso.notification.events` — mirroring how [trigger],
+/// [NotificationModule.send], and [NotificationModule.broadcast] are flat
+/// top-level methods rather than submodule properties, every method here is
+/// re-exposed as a flat, Event-suffixed method on [NotificationModule]
+/// (`createEvent()`, `updateEvent()`, etc.) per docs/notification.md's
+/// documented SDK surface — matching the JS SDK's `NotificationEventsModule`
+/// exactly.
+class EventsModule {
+  /// Creates an events module bound to [client].
+  const EventsModule(this._client);
+
+  final SupersoHttpClient _client;
+
+  /// `GET /notifications/events`
+  Future<ApiResponse<NotificationEventPage>> list({
+    bool? isActive,
+    String? category,
+    int? limit,
+    int? offset,
+  }) {
+    return withNotificationErrors(
+      () => _client.get<NotificationEventPage>(
+        '/notifications/events',
+        options: RequestOptions(
+          query: <String, Object?>{
+            'is_active': isActive,
+            'category': category,
+            'limit': limit,
+            'offset': offset,
+          },
+        ),
+        decoder: (data) => NotificationEventPage.fromJson(
+          data as Map<String, dynamic>? ?? const <String, dynamic>{},
+          NotificationEvent.fromJson,
+        ),
+      ),
+    );
+  }
+
+  /// `GET /notifications/events/:id`
+  Future<ApiResponse<NotificationEvent>> get(String id) {
+    return withNotificationErrors(
+      () => _client.get<NotificationEvent>(
+        '/notifications/events/${encodeSegment(id)}',
+        decoder: _event,
+      ),
+    );
+  }
+
+  /// `POST /notifications/events`
+  ///
+  /// [templates] is optional (Workflow A/B — see class doc comment above);
+  /// only [eventKey] and [name] are required.
+  Future<ApiResponse<NotificationEvent>> create({
+    required String eventKey,
+    required String name,
+    String? description,
+    String? category,
+    bool? isActive,
+    List<EventTemplateMapping>? templates,
+  }) {
+    return withNotificationErrors(
+      () => _client.post<NotificationEvent>(
+        '/notifications/events',
+        body: <String, dynamic>{
+          'event_key': eventKey,
+          'name': name,
+          if (description != null) 'description': description,
+          if (category != null) 'category': category,
+          if (isActive != null) 'is_active': isActive,
+          if (templates != null)
+            'templates': templates.map((t) => t.toJson()).toList(growable: false),
+        },
+        decoder: _event,
+      ),
+    );
+  }
+
+  /// `PATCH /notifications/events/:id` — every field optional. The backend
+  /// also accepts `PUT` on the same path (identical handler); this client
+  /// uses `PATCH` since every field here is partial. Supplying an empty
+  /// [templates] list is valid — it clears all mappings without deactivating
+  /// the event (see Workflow A).
+  Future<ApiResponse<NotificationEvent>> update(
+    String id, {
+    String? name,
+    String? description,
+    String? category,
+    bool? isActive,
+    List<EventTemplateMapping>? templates,
+  }) {
+    return withNotificationErrors(
+      () => _client.patch<NotificationEvent>(
+        '/notifications/events/${encodeSegment(id)}',
+        body: <String, dynamic>{
+          if (name != null) 'name': name,
+          if (description != null) 'description': description,
+          if (category != null) 'category': category,
+          if (isActive != null) 'is_active': isActive,
+          if (templates != null)
+            'templates': templates.map((t) => t.toJson()).toList(growable: false),
+        },
+        decoder: _event,
+      ),
+    );
+  }
+
+  /// `DELETE /notifications/events/:id`
+  Future<ApiResponse<void>> delete(String id) {
+    return withNotificationErrors(
+      () => _client.delete<void>(
+        '/notifications/events/${encodeSegment(id)}',
+        decoder: (_) {},
+      ),
+    );
+  }
+
+  /// `PATCH /notifications/events/:id/templates` — fully **replaces** the
+  /// mapping set (set semantics — the backend also accepts `PUT` on the same
+  /// path with identical behavior). Pass an empty list to clear all mappings.
+  Future<ApiResponse<List<EventTemplateMapping>>> mapTemplates(
+    String id,
+    List<EventTemplateMapping> templates,
+  ) {
+    return withNotificationErrors(
+      () => _client.patch<List<EventTemplateMapping>>(
+        '/notifications/events/${encodeSegment(id)}/templates',
+        body: <String, dynamic>{
+          'templates': templates.map((t) => t.toJson()).toList(growable: false),
+        },
+        decoder: (data) {
+          final map = data as Map<String, dynamic>? ?? const <String, dynamic>{};
+          final items = map['items'] as List<dynamic>? ?? const <dynamic>[];
+          return items
+              .whereType<Map<String, dynamic>>()
+              .map(EventTemplateMapping.fromJson)
+              .toList(growable: false);
+        },
+      ),
+    );
+  }
+
+  /// `PATCH /notifications/events/:id/status` — activates/deactivates
+  /// without touching name, description, category, or template mappings.
+  /// Prefer this over `update(id, isActive: ...)` when that's the only
+  /// change you're making.
+  Future<ApiResponse<NotificationEvent>> updateStatus(String id, bool active) {
+    return withNotificationErrors(
+      () => _client.patch<NotificationEvent>(
+        '/notifications/events/${encodeSegment(id)}/status',
+        body: <String, dynamic>{'active': active},
+        decoder: _event,
+      ),
+    );
+  }
+
+  /// `GET /notifications/events/:id/history` — new in v0.3.1. Returns the
+  /// event plus every delivery attempt recorded against it (one entry per
+  /// channel per trigger call), backed by the same records `trigger()`
+  /// itself writes — never a separate, potentially-stale history table.
+  Future<ApiResponse<EventHistoryResult>> getHistory(
+    String id, {
+    int? limit,
+    int? offset,
+  }) {
+    return withNotificationErrors(
+      () => _client.get<EventHistoryResult>(
+        '/notifications/events/${encodeSegment(id)}/history',
+        options: RequestOptions(
+          query: <String, Object?>{'limit': limit, 'offset': offset},
+        ),
+        decoder: (data) => EventHistoryResult.fromJson(
+          data as Map<String, dynamic>? ?? const <String, dynamic>{},
+        ),
+      ),
+    );
+  }
+
+  static NotificationEvent _event(Object? data) =>
+      NotificationEvent.fromJson(data as Map<String, dynamic>? ?? const <String, dynamic>{});
 }
 
 /// Schedule management.
@@ -1097,11 +1304,18 @@ class ProvidersModule {
 /// final inbox = await superso.notification.inbox.list(userId: user.id);
 /// print('${inbox.data.unreadCount} unread');
 /// ```
+///
+/// Event management is exposed as flat, Event-suffixed methods (matching
+/// [trigger]/[send]/[broadcast] rather than an `.events` submodule property):
+/// [createEvent], [updateEvent], [deleteEvent], [listEvents], [getEvent],
+/// [getEventHistory], [mapTemplates], [updateStatus], and [triggerEvent]
+/// (an alias of [trigger]).
 class NotificationModule implements SdkModule {
   /// Creates the notification module bound to [client].
   NotificationModule(this.client)
       : inbox = InboxModule(client),
         templates = TemplatesModule(client),
+        _events = EventsModule(client),
         schedules = SchedulesModule(client),
         queue = QueueModule(client),
         devices = DevicesModule(client),
@@ -1116,6 +1330,13 @@ class NotificationModule implements SdkModule {
 
   /// Template management.
   final TemplatesModule templates;
+
+  // Not exposed as a public `events` property — mirroring the JS SDK, where
+  // `trigger()`, `send()`, and `broadcast()` are flat top-level methods
+  // rather than submodule properties, every EventsModule method is
+  // re-exposed below as a flat, Event-suffixed method (`createEvent()`,
+  // `updateEvent()`, etc.) instead.
+  final EventsModule _events;
 
   /// Schedule management.
   final SchedulesModule schedules;
@@ -1256,6 +1477,111 @@ class NotificationModule implements SdkModule {
       ),
     );
   }
+
+  /// Alias of [trigger] — same endpoint, same behavior. Named to match the
+  /// other Event-suffixed methods below.
+  Future<ApiResponse<NotificationSendResult>> triggerEvent({
+    required String eventKey,
+    required String recipientId,
+    String? recipientRef,
+    Map<String, dynamic>? context,
+    bool? dryRun,
+    List<NotificationChannel>? channels,
+  }) =>
+      trigger(
+        eventKey: eventKey,
+        recipientId: recipientId,
+        recipientRef: recipientRef,
+        context: context,
+        dryRun: dryRun,
+        channels: channels,
+      );
+
+  /// `GET /notifications/events` — docs/notification.md "List Events".
+  Future<ApiResponse<NotificationEventPage>> listEvents({
+    bool? isActive,
+    String? category,
+    int? limit,
+    int? offset,
+  }) =>
+      _events.list(
+        isActive: isActive,
+        category: category,
+        limit: limit,
+        offset: offset,
+      );
+
+  /// `GET /notifications/events/:id` — docs/notification.md "Get Event".
+  Future<ApiResponse<NotificationEvent>> getEvent(String id) => _events.get(id);
+
+  /// `POST /notifications/events` — docs/notification.md "Create Event".
+  ///
+  /// [templates] is optional: omit it (or pass an empty list) to create the
+  /// event without any channel mapped yet, and map channels later with
+  /// [mapTemplates] — the backend stores this as a valid event either way.
+  /// It just can't be triggered until at least one channel is mapped.
+  Future<ApiResponse<NotificationEvent>> createEvent({
+    required String eventKey,
+    required String name,
+    String? description,
+    String? category,
+    bool? isActive,
+    List<EventTemplateMapping>? templates,
+  }) =>
+      _events.create(
+        eventKey: eventKey,
+        name: name,
+        description: description,
+        category: category,
+        isActive: isActive,
+        templates: templates,
+      );
+
+  /// `PATCH` (or `PUT`) `/notifications/events/:id` — docs/notification.md
+  /// "Update Event".
+  Future<ApiResponse<NotificationEvent>> updateEvent(
+    String id, {
+    String? name,
+    String? description,
+    String? category,
+    bool? isActive,
+    List<EventTemplateMapping>? templates,
+  }) =>
+      _events.update(
+        id,
+        name: name,
+        description: description,
+        category: category,
+        isActive: isActive,
+        templates: templates,
+      );
+
+  /// `DELETE /notifications/events/:id` — docs/notification.md "Delete Event".
+  Future<ApiResponse<void>> deleteEvent(String id) => _events.delete(id);
+
+  /// `PATCH` (or `PUT`) `/notifications/events/:id/templates` —
+  /// docs/notification.md "Update Event Templates". Fully replaces the
+  /// mapping set (set semantics, not a partial merge).
+  Future<ApiResponse<List<EventTemplateMapping>>> mapTemplates(
+    String id,
+    List<EventTemplateMapping> templates,
+  ) =>
+      _events.mapTemplates(id, templates);
+
+  /// `PATCH /notifications/events/:id/status` — docs/notification.md
+  /// "Update Event Status". Activates/deactivates only — leaves every other
+  /// field untouched.
+  Future<ApiResponse<NotificationEvent>> updateStatus(String id, bool active) =>
+      _events.updateStatus(id, active);
+
+  /// `GET /notifications/events/:id/history` — docs/notification.md "Event
+  /// History". New in v0.3.1.
+  Future<ApiResponse<EventHistoryResult>> getEventHistory(
+    String id, {
+    int? limit,
+    int? offset,
+  }) =>
+      _events.getHistory(id, limit: limit, offset: offset);
 
   /// `GET /notifications/queue/history` — the delivery log.
   ///

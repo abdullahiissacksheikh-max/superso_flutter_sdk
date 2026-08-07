@@ -750,6 +750,213 @@ class NotificationTemplate {
       '${channel.wireValue})';
 }
 
+/// One channel→template assignment on a [NotificationEvent].
+@immutable
+class EventTemplateMapping {
+  /// Creates a mapping.
+  const EventTemplateMapping({
+    required this.channel,
+    required this.templateSlug,
+    required this.isTemplateActive,
+    this.templateId,
+    this.templateName,
+  });
+
+  /// Decodes a mapping from JSON.
+  factory EventTemplateMapping.fromJson(Map<String, dynamic> json) =>
+      EventTemplateMapping(
+        channel: NotificationChannel.fromWire(json['channel'] as String?),
+        templateSlug: json['template_slug'] as String? ?? '',
+        templateId: json['template_id'] as String?,
+        templateName: json['template_name'] as String?,
+        isTemplateActive: json['is_template_active'] as bool? ?? false,
+      );
+
+  /// Which channel this mapping delivers on.
+  final NotificationChannel channel;
+
+  /// Stable slug of the mapped template.
+  final String templateSlug;
+
+  /// Resolved template ID, for engine efficiency at trigger time.
+  final String? templateId;
+
+  /// Resolved template display name.
+  final String? templateName;
+
+  /// Whether the mapped template is currently active.
+  final bool isTemplateActive;
+
+  /// Encodes this mapping to the shape `mapTemplates`/`createEvent` accept:
+  /// `{channel, template_slug}`.
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'channel': channel.wireValue,
+        'template_slug': templateSlug,
+      };
+
+  @override
+  String toString() =>
+      'EventTemplateMapping(channel: ${channel.wireValue}, slug: $templateSlug)';
+}
+
+/// A notification event (docs/notification.md "Event Object"). Events are
+/// orchestration objects — they map an [eventKey] to zero or more channel
+/// templates; `trigger()` resolves the mapping and delivers.
+///
+/// Template mapping is optional: an event can be created with no templates
+/// (Workflow A — map channels later via `events.mapTemplates()`) or fully
+/// mapped up front (Workflow B). An event with zero mappings is valid and
+/// storable, it just can't be triggered yet — `trigger()` throws a
+/// [NotificationError] carrying HTTP 422 / `event_no_templates` until at
+/// least one channel is mapped.
+@immutable
+class NotificationEvent {
+  /// Creates an event.
+  const NotificationEvent({
+    required this.id,
+    required this.projectId,
+    required this.name,
+    required this.eventKey,
+    required this.isActive,
+    required this.active,
+    required this.mappedChannels,
+    required this.templates,
+    required this.createdAt,
+    required this.updatedAt,
+    this.description,
+    this.category,
+    this.metadata,
+  });
+
+  /// Decodes an event from JSON.
+  factory NotificationEvent.fromJson(Map<String, dynamic> json) =>
+      NotificationEvent(
+        id: json['id'] as String? ?? '',
+        projectId: json['project_id'] as String? ?? '',
+        name: json['name'] as String? ?? '',
+        eventKey: json['event_key'] as String? ?? '',
+        description: json['description'] as String?,
+        category: json['category'] as String?,
+        isActive: json['is_active'] as bool? ?? false,
+        // `active` is an alias of `is_active` returned by the backend —
+        // both are always present and always equal. Falling back to
+        // `is_active` keeps this resilient if an older backend response
+        // (pre-v0.3.1) is ever decoded, since `active` did not exist before.
+        active: json['active'] as bool? ?? json['is_active'] as bool? ?? false,
+        mappedChannels: (json['mapped_channels'] as List<dynamic>? ??
+                const <dynamic>[])
+            .map((c) => NotificationChannel.fromWire(c as String?))
+            .toList(growable: false),
+        templates: (json['templates'] as List<dynamic>? ?? const <dynamic>[])
+            .whereType<Map<String, dynamic>>()
+            .map(EventTemplateMapping.fromJson)
+            .toList(growable: false),
+        metadata: json['metadata'] as Map<String, dynamic>?,
+        createdAt: json['created_at'] as String? ?? '',
+        updatedAt: json['updated_at'] as String? ?? '',
+      );
+
+  /// Event identifier.
+  final String id;
+
+  /// Owning project.
+  final String projectId;
+
+  /// Human-readable name.
+  final String name;
+
+  /// Unique dot-notation key used by `trigger()`, e.g. `user.registered`.
+  /// Immutable after creation.
+  final String eventKey;
+
+  /// When this event fires and what it delivers.
+  final String? description;
+
+  /// Organizational category, e.g. `auth`, `transactional`.
+  final String? category;
+
+  /// Whether the event can be triggered.
+  final bool isActive;
+
+  /// Alias of [isActive] — always present, always equal.
+  final bool active;
+
+  /// Derived server-side from `templates[].channel` — never compute this
+  /// yourself by mapping over [templates].
+  final List<NotificationChannel> mappedChannels;
+
+  /// Channel→template mappings. May be empty (Workflow A).
+  final List<EventTemplateMapping> templates;
+
+  /// Arbitrary metadata.
+  final Map<String, dynamic>? metadata;
+
+  /// ISO-8601 creation timestamp.
+  final String createdAt;
+
+  /// ISO-8601 last-update timestamp.
+  final String updatedAt;
+
+  @override
+  String toString() =>
+      'NotificationEvent(eventKey: $eventKey, active: $active, '
+      'channels: ${mappedChannels.map((c) => c.wireValue).join(", ")})';
+}
+
+/// A page of [NotificationEvent]s.
+typedef NotificationEventPage = NotificationPage<NotificationEvent>;
+
+/// `data` payload of `GET /notifications/events/:id/history`
+/// (docs/notification.md "Event History"). New in v0.3.1 — this endpoint did
+/// not exist in earlier releases. [items] are [QueueItem]s — the exact same
+/// records `trigger()` itself writes — not a separate, potentially-drifting
+/// history record type.
+@immutable
+class EventHistoryResult {
+  /// Creates an event history result.
+  const EventHistoryResult({
+    required this.event,
+    required this.items,
+    required this.total,
+    required this.limit,
+    required this.offset,
+  });
+
+  /// Decodes an event history result from JSON.
+  factory EventHistoryResult.fromJson(Map<String, dynamic> json) =>
+      EventHistoryResult(
+        event: NotificationEvent.fromJson(
+          json['event'] as Map<String, dynamic>? ?? const <String, dynamic>{},
+        ),
+        items: (json['items'] as List<dynamic>? ?? const <dynamic>[])
+            .whereType<Map<String, dynamic>>()
+            .map(QueueItem.fromJson)
+            .toList(growable: false),
+        total: (json['total'] as num?)?.toInt() ?? 0,
+        limit: (json['limit'] as num?)?.toInt() ?? 0,
+        offset: (json['offset'] as num?)?.toInt() ?? 0,
+      );
+
+  /// The event these history entries belong to.
+  final NotificationEvent event;
+
+  /// One entry per channel per trigger call, newest first.
+  final List<QueueItem> items;
+
+  /// Total items matching the query.
+  final int total;
+
+  /// Page size used.
+  final int limit;
+
+  /// Offset used.
+  final int offset;
+
+  @override
+  String toString() =>
+      'EventHistoryResult(event: ${event.eventKey}, items: ${items.length})';
+}
+
 /// A saved recurring or one-time schedule.
 @immutable
 class NotificationSchedule {

@@ -378,6 +378,26 @@ await superso.notification.send(
 final inbox = await superso.notification.inbox.list(userId: user.id);
 print('${inbox.data.unreadCount} unread');
 await superso.notification.inbox.read(inbox.data.items.first.id);
+
+// Events — create without mappings (Workflow A), map channels later.
+final event = await superso.notification.createEvent(
+  eventKey: 'user.registered',
+  name: 'User Registered',
+  category: 'authentication',
+);
+await superso.notification.mapTemplates(event.data.id, [
+  const EventTemplateMapping(
+    channel: NotificationChannel.email,
+    templateSlug: 'welcome-email',
+    isTemplateActive: true,
+  ),
+]);
+await superso.notification.triggerEvent(
+  eventKey: 'user.registered',
+  recipientId: user.id,
+);
+final history = await superso.notification.getEventHistory(event.data.id);
+print('${history.data.total} delivery attempts');
 ```
 
 ---

@@ -2,6 +2,39 @@
 
 All notable changes to `superso_flutter_sdk` are documented in this file.
 
+## 0.3.2
+
+Notification Event Engine completion: mirrors `supersosdk` 0.3.2 exactly. See
+`docs/notification.md`'s "Events" section for the full reference.
+
+> Note: the originating spec for this release called for a bump to `0.3.1`,
+> but that version number was already used by the OTP migration entry below.
+> This release is `0.3.2` instead so no history is overwritten.
+
+### Added
+
+- `NotificationModule.createEvent()` / `.updateEvent()` / `.deleteEvent()` /
+  `.listEvents()` / `.getEvent()` / `.mapTemplates()` / `.updateStatus()` /
+  `.triggerEvent()` (alias of `.trigger()`) — flat, Event-suffixed methods,
+  backed by a new internal `EventsModule` (`lib/src/notification/notification_module.dart`).
+  Not exposed as a public `.events` property, matching how `send()`/
+  `broadcast()`/`trigger()` are flat methods rather than submodules — this
+  mirrors `supersosdk`'s `NotificationEventsModule` exposure exactly.
+- `NotificationModule.getEventHistory(id)` — the backend's `GET
+  /notifications/events/:id/history` endpoint is new in this release; this
+  method did not previously exist because the endpoint didn't either.
+- `NotificationEvent`, `EventTemplateMapping`, `NotificationEventPage`, and
+  `EventHistoryResult` models in `lib/src/notification/notification_types.dart`.
+- `EventError` in `lib/src/notification/notification_module.dart`.
+
+### Changed
+
+- Template mapping is now optional when creating or updating an event
+  (`createEvent(eventKey: ..., name: ...)` with no `templates` is valid — map
+  channels later with `mapTemplates()`). Only `trigger()`/`triggerEvent()`
+  still requires at least one mapping, throwing `EventError`/`TriggerError`
+  (HTTP 422, `event_no_templates`) if none exist.
+
 ## 0.3.1
 
 Backend upgrade: Email Verification and Password Reset are now exclusively
