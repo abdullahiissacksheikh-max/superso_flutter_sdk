@@ -331,22 +331,21 @@ await superso.media.moderation.spotlight(sessionId, participantId);
 await superso.media.moderation
     .assignRole(sessionId, participantId, ClassroomRole.coHost);
 
-// Whiteboard
-final board = await superso.media.whiteboard.start(
-  sessionId,
-  allowParticipantDraw: true,
-);
-await superso.media.whiteboard.draw(
-  sessionId: sessionId,
-  participantId: participantId,
-  whiteboardId: board.data.id,
-  objectId: 'stroke-1',
-  points: [{'x': 10, 'y': 10}, {'x': 20, 'y': 30}],
-);
-
-// Late join / reconnect: replay the log to rebuild the exact canvas
-final log = await superso.media.whiteboard.listActions(sessionId, board.data.id);
-for (final action in log.data.actions) applyToCanvas(action);
+// Publish: open the signaling socket, then drive your own WebRTC plugin
+// (e.g. flutter_webrtc) — this SDK does not bundle one, exactly like the
+// JS SDK. See docs/media.md §12 "Publisher Flow".
+final connection = await superso.media.publishers.join(session.data.id);
+connection.onReady.listen((ready) {
+  // Configure your RTCPeerConnection with ready.iceServers, add your
+  // camera/microphone tracks, create an offer, then:
+  // connection.sendOffer(offer.sdp);
+});
+connection.onAnswer.listen((answer) {
+  // yourPeerConnection.setRemoteDescription(answer.sdp)
+});
+connection.onIceCandidate.listen((candidate) {
+  // yourPeerConnection.addIceCandidate(candidate)
+});
 ```
 
 > **Moderation needs a host, not just an API key.** Every method on
@@ -355,6 +354,13 @@ for (final action in log.data.actions) applyToCanvas(action);
 > gets a `HostAuthorizationError`. A session's creator becomes its host
 > automatically on first join, provided they were signed in when it was
 > created.
+
+> **Signaling is transport-only.** `media.publishers`/`media.subscribers`/
+> `media.websocket` exchange the documented `ready`/`offer`/`answer`/
+> `ice_candidate` frames and reconnect automatically, but do not create a
+> `RTCPeerConnection` or capture the camera/microphone — the host
+> application owns its own WebRTC stack and drives it from the events these
+> connections expose.
 
 ---
 

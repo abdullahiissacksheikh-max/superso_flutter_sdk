@@ -3,4 +3,5 @@ library;
 
 export 'media_events.dart';
 export 'media_module.dart';
+export 'media_signaling.dart';
 export 'media_types.dart';

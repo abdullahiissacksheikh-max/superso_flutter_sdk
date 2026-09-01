@@ -1,6 +1,6 @@
 /// The Media module: sessions, participants, moderation, permissions, voice
-/// rooms, classroom, whiteboard, breakout rooms, waiting room, lobby chat,
-/// signalling, telemetry, analytics, and realtime events.
+/// rooms, classroom, breakout rooms, waiting room, raw WebRTC signaling,
+/// telemetry, analytics, and realtime events.
 ///
 /// Dart port of `supersosdk/src/media/*`.
 library;
@@ -13,6 +13,7 @@ import '../interfaces/sdk_module.dart';
 import '../realtime/realtime_socket.dart';
 import '../types/common.dart';
 import '../utils/url.dart';
+import 'media_signaling.dart';
 import 'media_types.dart';
 
 /// Base class for every Media-domain error.
@@ -43,24 +44,6 @@ class HostAuthorizationError extends MediaError {
           message,
           status: 403,
           code: 'HOST_AUTHORIZATION_REQUIRED',
-          details: details,
-        );
-}
-
-/// Drawing is not currently permitted on the target whiteboard.
-///
-/// Raised when a non-privileged participant draws while the host has
-/// `allowParticipantDraw` turned off. The backend supplies the specific reason
-/// in [SupersoError.details].
-class WhiteboardPermissionError extends MediaError {
-  /// Creates a whiteboard permission error.
-  const WhiteboardPermissionError(
-    String message, [
-    Object? details,
-  ]) : super(
-          message,
-          status: 403,
-          code: 'WHITEBOARD_DRAW_NOT_PERMITTED',
           details: details,
         );
 }
@@ -96,9 +79,6 @@ Future<T> withMediaErrors<T>(Future<T> Function() operation) async {
   } on CancelledError {
     rethrow;
   } on PermissionError catch (error) {
-    if (mediaErrorCode(error.details) == 'WHITEBOARD_DRAW_NOT_PERMITTED') {
-      throw WhiteboardPermissionError(error.message, error.details);
-    }
     throw HostAuthorizationError(error.message, error.details);
   } on SupersoError catch (error) {
     throw MediaError(
@@ -136,6 +116,11 @@ List<MediaResource> _resourceList(Object? data, [String? key]) {
 }
 
 MediaParticipant _participant(Object? data) => MediaParticipant.fromJson(
+      data as Map<String, dynamic>? ?? const <String, dynamic>{},
+    );
+
+PermissionRequest _permissionRequest(Object? data) =>
+    PermissionRequest.fromJson(
       data as Map<String, dynamic>? ?? const <String, dynamic>{},
     );
 
@@ -289,6 +274,26 @@ class MediaSessionsModule {
       ),
     );
   }
+
+  /// `GET /v1/media/sessions/:sessionId/speakers` — docs/media.md §19
+  /// "Active Speaker Detection": participants currently speaking or with
+  /// camera on. Documented since before this route existed on the SDK
+  /// router; was previously registered only under the Admin-JWT router
+  /// (`media_routes.go`) — closed as part of the public SDK endpoint audit,
+  /// mirroring `SDKHandler.GetActiveSpeakers`.
+  Future<ApiResponse<List<MediaParticipant>>> speakers(String sessionId) {
+    return withMediaErrors(
+      () => _client.get<List<MediaParticipant>>(
+        _sessionPath(sessionId, 'speakers'),
+        decoder: (data) =>
+            ((data as Map<String, dynamic>?)?['speakers'] as List<dynamic>? ??
+                    const <dynamic>[])
+                .whereType<Map<String, dynamic>>()
+                .map(MediaParticipant.fromJson)
+                .toList(growable: false),
+      ),
+    );
+  }
 }
 
 /// Participant lookup, telemetry, and removal.
@@ -327,7 +332,19 @@ class MediaParticipantsModule {
 
   /// `PATCH /v1/media/participants/:participantId/telemetry` — reports
   /// connection quality.
-  Future<ApiResponse<void>> pushTelemetry(
+  ///
+  /// v0.3.10 fix: this previously discarded the response body entirely
+  /// (`ApiResponse<void>`, `decoder: (_) {}`), even though docs/media.md
+  /// §25 documents the server as returning "the full updated participant
+  /// object" — the same response `supersosdk`'s `telemetry.push()` already
+  /// surfaces as a `MediaParticipant`, including the just-recomputed
+  /// `connection_score`/`network_quality`. There was no way to read those
+  /// recomputed values without an extra, separate `get(participantId)`
+  /// call. Now decoded with the same [_participant] decoder `get()` uses,
+  /// so the response is a real [MediaParticipant] (any field without a
+  /// dedicated getter remains reachable via `.raw`, same as everywhere else
+  /// in this class).
+  Future<ApiResponse<MediaParticipant>> pushTelemetry(
     String participantId, {
     double? rttMs,
     double? packetLossPct,
@@ -336,7 +353,7 @@ class MediaParticipantsModule {
     Map<String, dynamic>? extra,
   }) {
     return withMediaErrors(
-      () => _client.patch<void>(
+      () => _client.patch<MediaParticipant>(
         '/media/participants/${encodeSegment(participantId)}/telemetry',
         body: <String, dynamic>{
           if (rttMs != null) 'rtt_ms': rttMs,
@@ -345,7 +362,7 @@ class MediaParticipantsModule {
           if (bitrateKbps != null) 'bitrate_kbps': bitrateKbps,
           if (extra != null) ...extra,
         },
-        decoder: (_) {},
+        decoder: _participant,
       ),
     );
   }
@@ -383,28 +400,41 @@ class MediaPermissionsModule {
   final SupersoHttpClient _client;
 
   /// Requests camera access.
-  Future<ApiResponse<MediaParticipant>> requestCamera(
+  ///
+  /// Returns the created [PermissionRequest] — fixed in v0.3.1. This method
+  /// previously declared and decoded its response as [MediaParticipant],
+  /// but `sdk_permission_handler.go`'s `RequestCamera` actually responds
+  /// with a `PermissionRequestResponse` (a request record: `id`,
+  /// `request_type`, `status`, ...), a differently-shaped object.
+  Future<ApiResponse<PermissionRequest>> requestCamera(
     String sessionId,
     String participantId, {
     String? reason,
   }) =>
-      _request(sessionId, participantId, 'request-camera', reason);
+      _requestPermission(sessionId, participantId, 'request-camera', reason);
 
   /// Requests microphone access.
-  Future<ApiResponse<MediaParticipant>> requestMicrophone(
+  ///
+  /// Returns the created [PermissionRequest] — see [requestCamera]'s doc
+  /// comment for why this is not a [MediaParticipant].
+  Future<ApiResponse<PermissionRequest>> requestMicrophone(
     String sessionId,
     String participantId, {
     String? reason,
   }) =>
-      _request(sessionId, participantId, 'request-microphone', reason);
+      _requestPermission(
+          sessionId, participantId, 'request-microphone', reason);
 
   /// Requests screen-share access.
-  Future<ApiResponse<MediaParticipant>> requestScreen(
+  ///
+  /// Returns the created [PermissionRequest] — see [requestCamera]'s doc
+  /// comment for why this is not a [MediaParticipant].
+  Future<ApiResponse<PermissionRequest>> requestScreen(
     String sessionId,
     String participantId, {
     String? reason,
   }) =>
-      _request(sessionId, participantId, 'request-screen', reason);
+      _requestPermission(sessionId, participantId, 'request-screen', reason);
 
   /// Requests to join the stage.
   Future<ApiResponse<MediaParticipant>> requestStage(
@@ -481,6 +511,24 @@ class MediaPermissionsModule {
         _participantPath(sessionId, participantId, action),
         body: reason == null ? null : <String, dynamic>{'reason': reason},
         decoder: _participant,
+      ),
+    );
+  }
+
+  /// Like [_request], but for the three actions that respond with a
+  /// [PermissionRequest] instead of a [MediaParticipant]. See
+  /// [requestCamera]'s doc comment for why these differ.
+  Future<ApiResponse<PermissionRequest>> _requestPermission(
+    String sessionId,
+    String participantId,
+    String action,
+    String? reason,
+  ) {
+    return withMediaErrors(
+      () => _client.post<PermissionRequest>(
+        _participantPath(sessionId, participantId, action),
+        body: reason == null ? null : <String, dynamic>{'reason': reason},
+        decoder: _permissionRequest,
       ),
     );
   }
@@ -672,315 +720,83 @@ class MediaModerationModule {
   }
 }
 
-/// The collaborative whiteboard: lifecycle plus the full drawing engine.
+/// A publisher opens the signaling connection with `role: publisher` and
+/// negotiates a WebRTC peer connection over it (docs/media.md §12
+/// "Publisher Flow").
 ///
-/// Exposed at `superso.media.whiteboard`.
+/// Exposed at `superso.media.publishers`.
 ///
-/// Authorization splits two ways:
-/// - [start], [end], [updatePermissions], and [clear] require host standing
-///   and an end-user access token.
-/// - [draw], [addShape], [addText], [erase], [undo], [redo], and [sendPointer]
-///   are self-service and need only the project API key. The backend enforces
-///   the board's `allowParticipantDraw` flag: a non-privileged participant may
-///   draw only when a host has turned it on.
-///
-/// **Sync model.** A client opening a board mid-session, or reconnecting,
-/// should call [listActions] and apply every returned action in order — that
-/// reconstructs the exact current canvas with no server-side rendering. From
-/// then on the whiteboard event streams keep it live.
-class MediaWhiteboardModule {
-  /// Creates a whiteboard module bound to [client].
-  const MediaWhiteboardModule(this._client);
+/// This module owns the documented signaling transport
+/// ([MediaSignalingConnection]) and the documented REST self-service actions
+/// ([MediaModerationModule]/[MediaPermissionsModule]); it does not bundle a
+/// WebRTC media-capture engine (no `RTCPeerConnection`, no camera/microphone
+/// capture) — the host application supplies its own WebRTC plugin and wires
+/// its offer/ICE-candidate calls through the connection [join] returns.
+class MediaPublishersModule {
+  /// Creates a publishers module bound to [client].
+  MediaPublishersModule(this._client);
 
   final SupersoHttpClient _client;
 
-  String _boardPath(String sessionId, String whiteboardId, String action) =>
-      '${_sessionPath(sessionId, 'whiteboard')}'
-      '/${encodeSegment(whiteboardId)}/$action';
+  /// The signaling connection this module opens and reuses across [join]/
+  /// [leave] calls.
+  late final MediaSignalingConnection connection =
+      MediaSignalingConnection(_client);
 
-  String _drawPath(
-    String sessionId,
-    String participantId,
-    String whiteboardId,
-    String action,
-  ) =>
-      '/media/sessions/${encodeSegment(sessionId)}'
-      '/participants/${encodeSegment(participantId)}'
-      '/whiteboard/${encodeSegment(whiteboardId)}/$action';
-
-  /// `POST /sessions/:sessionId/whiteboard` — opens a board. Host only.
-  ///
-  /// Each call creates a *new* board with a new ID. An ID from a previous
-  /// board permanently 404s once superseded — always use the ID this returns.
-  Future<ApiResponse<WhiteboardSession>> start(
-    String sessionId, {
-    String? title,
-    bool allowParticipantDraw = false,
-  }) {
-    return withMediaErrors(
-      () => _client.post<WhiteboardSession>(
-        _sessionPath(sessionId, 'whiteboard'),
-        body: <String, dynamic>{
-          if (title != null) 'title': title,
-          'allow_participant_draw': allowParticipantDraw,
-        },
-        decoder: _whiteboard,
-      ),
-    );
+  /// Opens the signaling connection for [sessionId] with `role: publisher`.
+  /// Returns the same [MediaSignalingConnection] as [connection].
+  Future<MediaSignalingConnection> join(String sessionId) async {
+    await connection.connect(sessionId, SignalingRole.publisher);
+    return connection;
   }
 
-  /// `GET /sessions/:sessionId/whiteboard` — the active board.
-  ///
-  /// Returns 404 when no board is currently open — before a host starts one,
-  /// after one ends, or when a previous board has been superseded. That is
-  /// ordinary REST semantics here, not an error condition.
-  Future<ApiResponse<WhiteboardSession>> getActive(String sessionId) {
-    return withMediaErrors(
-      () => _client.get<WhiteboardSession>(
-        _sessionPath(sessionId, 'whiteboard'),
-        decoder: _whiteboard,
-      ),
-    );
-  }
-
-  /// `POST .../whiteboard/:whiteboardId/end` — closes the board. Host only.
-  Future<ApiResponse<void>> end(String sessionId, String whiteboardId) {
-    return withMediaErrors(
-      () => _client.post<void>(
-        _boardPath(sessionId, whiteboardId, 'end'),
-        decoder: (_) {},
-      ),
-    );
-  }
-
-  /// `PATCH .../whiteboard/:whiteboardId/permissions` — toggles whether
-  /// non-privileged participants may draw. Host only.
-  Future<ApiResponse<void>> updatePermissions(
-    String sessionId,
-    String whiteboardId, {
-    required bool allowParticipantDraw,
-  }) {
-    return withMediaErrors(
-      () => _client.patch<void>(
-        _boardPath(sessionId, whiteboardId, 'permissions'),
-        body: <String, dynamic>{
-          'allow_participant_draw': allowParticipantDraw,
-        },
-        decoder: (_) {},
-      ),
-    );
-  }
-
-  /// `POST .../whiteboard/:whiteboardId/clear` — removes every object.
-  /// Host only.
-  Future<ApiResponse<void>> clear(String sessionId, String whiteboardId) {
-    return withMediaErrors(
-      () => _client.post<void>(
-        _boardPath(sessionId, whiteboardId, 'clear'),
-        decoder: (_) {},
-      ),
-    );
-  }
-
-  /// `GET .../whiteboard/:whiteboardId/actions` — the full replay log.
-  Future<ApiResponse<WhiteboardActionLog>> listActions(
-    String sessionId,
-    String whiteboardId,
-  ) {
-    return withMediaErrors(
-      () => _client.get<WhiteboardActionLog>(
-        _boardPath(sessionId, whiteboardId, 'actions'),
-        decoder: (data) => WhiteboardActionLog.fromJson(
-          data as Map<String, dynamic>? ?? const <String, dynamic>{},
-        ),
-      ),
-    );
-  }
-
-  /// `POST .../whiteboard/:whiteboardId/draw` — appends a freehand stroke.
-  ///
-  /// [objectId] must be a client-generated stable identifier; erase, undo, and
-  /// redo all resolve objects by it. [points] is an opaque coordinate list the
-  /// backend stores verbatim.
-  Future<ApiResponse<WhiteboardAction>> draw({
-    required String sessionId,
-    required String participantId,
-    required String whiteboardId,
-    required String objectId,
-    required List<Map<String, double>> points,
-    String? color,
-    double? strokeWidth,
-  }) {
-    if (objectId.trim().isEmpty) {
-      throw const ValidationError('Superso: a stroke needs an objectId.');
-    }
-    return withMediaErrors(
-      () => _client.post<WhiteboardAction>(
-        _drawPath(sessionId, participantId, whiteboardId, 'draw'),
-        body: <String, dynamic>{
-          'object_id': objectId,
-          'points': points,
-          if (color != null) 'color': color,
-          if (strokeWidth != null) 'stroke_width': strokeWidth,
-        },
-        decoder: _action,
-      ),
-    );
-  }
-
-  /// `POST .../whiteboard/:whiteboardId/shapes` — adds a shape.
-  Future<ApiResponse<WhiteboardAction>> addShape({
-    required String sessionId,
-    required String participantId,
-    required String whiteboardId,
-    required String objectId,
-    required Map<String, dynamic> payload,
-    String? color,
-    double? strokeWidth,
-  }) =>
-      _addObject(
-        sessionId: sessionId,
-        participantId: participantId,
-        whiteboardId: whiteboardId,
-        action: 'shapes',
-        objectId: objectId,
-        payload: payload,
-        color: color,
-        strokeWidth: strokeWidth,
-      );
-
-  /// `POST .../whiteboard/:whiteboardId/text` — adds a text object.
-  Future<ApiResponse<WhiteboardAction>> addText({
-    required String sessionId,
-    required String participantId,
-    required String whiteboardId,
-    required String objectId,
-    required Map<String, dynamic> payload,
-    String? color,
-    double? strokeWidth,
-  }) =>
-      _addObject(
-        sessionId: sessionId,
-        participantId: participantId,
-        whiteboardId: whiteboardId,
-        action: 'text',
-        objectId: objectId,
-        payload: payload,
-        color: color,
-        strokeWidth: strokeWidth,
-      );
-
-  /// `POST .../whiteboard/:whiteboardId/erase` — removes one object.
-  Future<ApiResponse<void>> erase({
-    required String sessionId,
-    required String participantId,
-    required String whiteboardId,
-    required String objectId,
-  }) {
-    return withMediaErrors(
-      () => _client.post<void>(
-        _drawPath(sessionId, participantId, whiteboardId, 'erase'),
-        body: <String, dynamic>{'object_id': objectId},
-        decoder: (_) {},
-      ),
-    );
-  }
-
-  /// `POST .../whiteboard/:whiteboardId/undo` — reverts your own last action.
-  ///
-  /// Undo is scoped per participant: you can only undo your own work, so
-  /// concurrent editors never stomp on each other's history. Returns `null`
-  /// when there is nothing left to undo.
-  Future<WhiteboardAction?> undo({
-    required String sessionId,
-    required String participantId,
-    required String whiteboardId,
-  }) async {
-    final response = await withMediaErrors(
-      () => _client.post<Map<String, dynamic>?>(
-        _drawPath(sessionId, participantId, whiteboardId, 'undo'),
-        decoder: (data) => data as Map<String, dynamic>?,
-      ),
-    );
-    final data = response.data;
-    return data == null ? null : WhiteboardAction.fromJson(data);
-  }
-
-  /// `POST .../whiteboard/:whiteboardId/redo` — re-applies your own last
-  /// undone action. Returns `null` when there is nothing to redo.
-  Future<WhiteboardAction?> redo({
-    required String sessionId,
-    required String participantId,
-    required String whiteboardId,
-  }) async {
-    final response = await withMediaErrors(
-      () => _client.post<Map<String, dynamic>?>(
-        _drawPath(sessionId, participantId, whiteboardId, 'redo'),
-        decoder: (data) => data as Map<String, dynamic>?,
-      ),
-    );
-    final data = response.data;
-    return data == null ? null : WhiteboardAction.fromJson(data);
-  }
-
-  /// `POST .../whiteboard/:whiteboardId/pointer` — broadcasts a live cursor.
-  ///
-  /// Deliberately not persisted: a cursor position is meaningless after the
-  /// fact and would flood the action log at mouse-move frequency.
-  Future<ApiResponse<void>> sendPointer({
-    required String sessionId,
-    required String participantId,
-    required String whiteboardId,
-    required double x,
-    required double y,
-  }) {
-    return withMediaErrors(
-      () => _client.post<void>(
-        _drawPath(sessionId, participantId, whiteboardId, 'pointer'),
-        body: <String, dynamic>{'x': x, 'y': y},
-        decoder: (_) {},
-      ),
-    );
-  }
-
-  Future<ApiResponse<WhiteboardAction>> _addObject({
-    required String sessionId,
-    required String participantId,
-    required String whiteboardId,
-    required String action,
-    required String objectId,
-    required Map<String, dynamic> payload,
-    String? color,
-    double? strokeWidth,
-  }) {
-    if (objectId.trim().isEmpty) {
-      throw const ValidationError('Superso: an object needs an objectId.');
-    }
-    return withMediaErrors(
-      () => _client.post<WhiteboardAction>(
-        _drawPath(sessionId, participantId, whiteboardId, action),
-        body: <String, dynamic>{
-          'object_id': objectId,
-          'payload': payload,
-          if (color != null) 'color': color,
-          if (strokeWidth != null) 'stroke_width': strokeWidth,
-        },
-        decoder: _action,
-      ),
-    );
-  }
-
-  static WhiteboardSession _whiteboard(Object? data) =>
-      WhiteboardSession.fromJson(
-        data as Map<String, dynamic>? ?? const <String, dynamic>{},
-      );
-
-  static WhiteboardAction _action(Object? data) => WhiteboardAction.fromJson(
-        data as Map<String, dynamic>? ?? const <String, dynamic>{},
-      );
+  /// Closes the signaling connection.
+  Future<void> leave() => connection.disconnect();
 }
 
-/// The classroom engine: reactions, polls, chat, speaker queue, attendance.
+/// A subscriber opens the signaling connection with `role: subscriber` to
+/// receive tracks from every publisher in the session (docs/media.md §13
+/// "Subscriber Flow").
+///
+/// Exposed at `superso.media.subscribers`.
+///
+/// As with [MediaPublishersModule], this module owns the documented
+/// signaling transport only — decoding received tracks into a renderable
+/// view is left to the host application's own WebRTC plugin, which
+/// subscribes to [MediaSignalingConnection.onOffer] /
+/// [MediaSignalingConnection.onIceCandidate] on the returned connection.
+class MediaSubscribersModule {
+  /// Creates a subscribers module bound to [client].
+  MediaSubscribersModule(this._client);
+
+  final SupersoHttpClient _client;
+
+  /// The signaling connection this module opens and reuses across [join]/
+  /// [leave] calls.
+  late final MediaSignalingConnection connection =
+      MediaSignalingConnection(_client);
+
+  /// Opens the signaling connection for [sessionId] with `role: subscriber`.
+  /// Returns the same [MediaSignalingConnection] as [connection].
+  Future<MediaSignalingConnection> join(String sessionId) async {
+    await connection.connect(sessionId, SignalingRole.subscriber);
+    return connection;
+  }
+
+  /// Closes the signaling connection.
+  Future<void> leave() => connection.disconnect();
+}
+
+/// The classroom engine: attendance, speaker queue.
+///
+/// This class originally also carried Reactions, Polls, and Classroom Hand
+/// Raise (`sendReaction`/`reactionSummary`/`createPoll`/`listPolls`/`vote`/
+/// `pollResults`/`raiseHand`/`lowerHand`). Those six features (Classroom,
+/// Polls, Whiteboard, Reactions, Chat, Webhooks) were removed from Media
+/// Core — see docs/media.md. Attendance and Speaker Queue are separate,
+/// still-supported features that happened to share this class name; it is
+/// kept as-is (not renamed) to avoid an unrelated, unrequested
+/// rename/refactor.
 ///
 /// Exposed at `superso.media.classroom`.
 class MediaClassroomModule {
@@ -988,103 +804,6 @@ class MediaClassroomModule {
   const MediaClassroomModule(this._client);
 
   final SupersoHttpClient _client;
-
-  /// `POST /sessions/:sessionId/reactions` — sends an emoji reaction.
-  Future<ApiResponse<void>> sendReaction(
-    String sessionId, {
-    required String participantId,
-    required String emoji,
-  }) {
-    return withMediaErrors(
-      () => _client.post<void>(
-        _sessionPath(sessionId, 'reactions'),
-        body: <String, dynamic>{
-          'participant_id': participantId,
-          'emoji': emoji,
-        },
-        decoder: (_) {},
-      ),
-    );
-  }
-
-  /// `GET /sessions/:sessionId/reactions/summary` — per-emoji counts.
-  Future<ApiResponse<List<MediaResource>>> reactionSummary(String sessionId) {
-    return withMediaErrors(
-      () => _client.get<List<MediaResource>>(
-        _sessionPath(sessionId, 'reactions/summary'),
-        decoder: (data) => _resourceList(data, 'reactions'),
-      ),
-    );
-  }
-
-  /// `POST /sessions/:sessionId/polls` — creates a poll.
-  Future<ApiResponse<MediaResource>> createPoll(
-    String sessionId, {
-    required String question,
-    required List<String> options,
-    String? createdBy,
-    bool? allowMultiple,
-    bool? anonymous,
-  }) {
-    if (options.length < 2) {
-      throw const ValidationError('Superso: a poll needs at least two options.');
-    }
-    return withMediaErrors(
-      () => _client.post<MediaResource>(
-        _sessionPath(sessionId, 'polls'),
-        body: <String, dynamic>{
-          'question': question,
-          'options': options,
-          if (createdBy != null) 'created_by': createdBy,
-          if (allowMultiple != null) 'allow_multiple': allowMultiple,
-          if (anonymous != null) 'anonymous': anonymous,
-        },
-        decoder: _resource,
-      ),
-    );
-  }
-
-  /// `GET /sessions/:sessionId/polls` — every poll in the session.
-  Future<ApiResponse<List<MediaResource>>> listPolls(String sessionId) {
-    return withMediaErrors(
-      () => _client.get<List<MediaResource>>(
-        _sessionPath(sessionId, 'polls'),
-        decoder: (data) => _resourceList(data, 'polls'),
-      ),
-    );
-  }
-
-  /// `POST /sessions/:sessionId/polls/:pollId/vote` — submits a vote.
-  Future<ApiResponse<MediaResource>> vote(
-    String sessionId,
-    String pollId, {
-    required String participantId,
-    required List<int> optionIndexes,
-  }) {
-    return withMediaErrors(
-      () => _client.post<MediaResource>(
-        _sessionPath(sessionId, 'polls/${encodeSegment(pollId)}/vote'),
-        body: <String, dynamic>{
-          'participant_id': participantId,
-          'option_indexes': optionIndexes,
-        },
-        decoder: _resource,
-      ),
-    );
-  }
-
-  /// `GET /sessions/:sessionId/polls/:pollId/results` — vote aggregation.
-  Future<ApiResponse<MediaResource>> pollResults(
-    String sessionId,
-    String pollId,
-  ) {
-    return withMediaErrors(
-      () => _client.get<MediaResource>(
-        _sessionPath(sessionId, 'polls/${encodeSegment(pollId)}/results'),
-        decoder: _resource,
-      ),
-    );
-  }
 
   /// `GET /sessions/:sessionId/attendance` — per-participant summary.
   Future<ApiResponse<List<MediaResource>>> attendanceSummary(
@@ -1094,43 +813,6 @@ class MediaClassroomModule {
       () => _client.get<List<MediaResource>>(
         _sessionPath(sessionId, 'attendance'),
         decoder: (data) => _resourceList(data, 'summary'),
-      ),
-    );
-  }
-
-  /// `POST /sessions/:sessionId/chat` — sends a chat message.
-  Future<ApiResponse<MediaResource>> sendChatMessage(
-    String sessionId, {
-    required String participantId,
-    required String body,
-    String? replyToId,
-  }) {
-    return withMediaErrors(
-      () => _client.post<MediaResource>(
-        _sessionPath(sessionId, 'chat'),
-        body: <String, dynamic>{
-          'participant_id': participantId,
-          'body': body,
-          if (replyToId != null) 'reply_to_id': replyToId,
-        },
-        decoder: _resource,
-      ),
-    );
-  }
-
-  /// `GET /sessions/:sessionId/chat` — the message history.
-  Future<ApiResponse<List<MediaResource>>> listChat(
-    String sessionId, {
-    int? limit,
-    int? offset,
-  }) {
-    return withMediaErrors(
-      () => _client.get<List<MediaResource>>(
-        _sessionPath(sessionId, 'chat'),
-        options: RequestOptions(
-          query: <String, Object?>{'limit': limit, 'offset': offset},
-        ),
-        decoder: (data) => _resourceList(data, 'messages'),
       ),
     );
   }
@@ -1182,47 +864,21 @@ class MediaClassroomModule {
     );
   }
 
-  /// `POST /sessions/:sessionId/classroom/raise-hand` — raises a hand, with
-  /// classroom metadata.
-  Future<ApiResponse<MediaParticipant>> raiseHand(
-    String sessionId, {
-    required String participantId,
-    String? emoji,
-    String? questionType,
-    int? priority,
-  }) {
-    return withMediaErrors(
-      () => _client.post<MediaParticipant>(
-        _sessionPath(sessionId, 'classroom/raise-hand'),
-        body: <String, dynamic>{
-          'participant_id': participantId,
-          if (emoji != null) 'emoji': emoji,
-          if (questionType != null) 'question_type': questionType,
-          if (priority != null) 'priority': priority,
-        },
-        decoder: _participant,
-      ),
-    );
-  }
-
-  /// `POST /sessions/:sessionId/classroom/lower-hand` — lowers a hand.
-  Future<ApiResponse<MediaParticipant>> lowerHand(
-    String sessionId, {
-    required String participantId,
-  }) {
-    return withMediaErrors(
-      () => _client.post<MediaParticipant>(
-        _sessionPath(sessionId, 'classroom/lower-hand'),
-        body: <String, dynamic>{'participant_id': participantId},
-        decoder: _participant,
-      ),
-    );
-  }
 }
 
 /// Voice rooms.
 ///
 /// Exposed at `superso.media.voiceRooms`.
+///
+/// The backend confirms an SDK REST subset of 8 routes
+/// (`sdk_media_routes.go`): create, list, get, start, end, participants,
+/// raise-hand, lower-hand.
+///
+/// `update`, `transferHost`, `promote`, `demote`, `mute`, `unmute`,
+/// `acceptHand`, `rejectHand`, `addModerator`, and `removeModerator` are
+/// documented under the Admin REST API only (`media_routes.go`, JWT auth) —
+/// the SDK router does not register them, so they are intentionally not
+/// implemented here to avoid shipping a method that would 404.
 class MediaVoiceRoomsModule {
   /// Creates a voice-rooms module bound to [client].
   const MediaVoiceRoomsModule(this._client);
@@ -1332,7 +988,7 @@ class MediaVoiceRoomsModule {
   }
 }
 
-/// Breakout rooms, the waiting room, and lobby chat.
+/// Breakout rooms and the waiting room.
 ///
 /// Exposed at `superso.media.rooms`.
 ///
@@ -1397,131 +1053,6 @@ class MediaRoomsModule {
     );
   }
 
-  /// `GET /sessions/:sessionId/lobby-chat` — lobby messages.
-  Future<ApiResponse<List<MediaResource>>> listLobbyChat(
-    String sessionId, {
-    int? limit,
-    int? offset,
-  }) {
-    return withMediaErrors(
-      () => _client.get<List<MediaResource>>(
-        _sessionPath(sessionId, 'lobby-chat'),
-        options: RequestOptions(
-          query: <String, Object?>{'limit': limit, 'offset': offset},
-        ),
-        decoder: (data) => _resourceList(data, 'messages'),
-      ),
-    );
-  }
-
-  /// `POST /sessions/:sessionId/lobby-chat` — sends a lobby message.
-  Future<ApiResponse<MediaResource>> sendLobbyMessage(
-    String sessionId, {
-    required String participantId,
-    required String senderName,
-    required String body,
-  }) {
-    return withMediaErrors(
-      () => _client.post<MediaResource>(
-        _sessionPath(sessionId, 'lobby-chat'),
-        body: <String, dynamic>{
-          'participant_id': participantId,
-          'sender_name': senderName,
-          'body': body,
-        },
-        decoder: _resource,
-      ),
-    );
-  }
-}
-
-/// Invitations and share links.
-///
-/// Exposed at `superso.media.invites`.
-class MediaInvitesModule {
-  /// Creates an invites module bound to [client].
-  const MediaInvitesModule(this._client);
-
-  final SupersoHttpClient _client;
-
-  /// `POST /sessions/:sessionId/invitations` — creates an invitation.
-  Future<ApiResponse<MediaResource>> create(
-    String sessionId, {
-    required String inviteType,
-    String? email,
-    String? phone,
-    String? role,
-    String? expiresAt,
-  }) {
-    return withMediaErrors(
-      () => _client.post<MediaResource>(
-        _sessionPath(sessionId, 'invitations'),
-        body: <String, dynamic>{
-          'invite_type': inviteType,
-          if (email != null) 'email': email,
-          if (phone != null) 'phone': phone,
-          if (role != null) 'role': role,
-          if (expiresAt != null) 'expires_at': expiresAt,
-        },
-        decoder: _resource,
-      ),
-    );
-  }
-
-  /// `POST /sessions/:sessionId/links` — creates a share link.
-  Future<ApiResponse<MediaResource>> createLink(
-    String sessionId, {
-    required String linkType,
-    int? maxUses,
-    String? expiresAt,
-  }) {
-    return withMediaErrors(
-      () => _client.post<MediaResource>(
-        _sessionPath(sessionId, 'links'),
-        body: <String, dynamic>{
-          'link_type': linkType,
-          if (maxUses != null) 'max_uses': maxUses,
-          if (expiresAt != null) 'expires_at': expiresAt,
-        },
-        decoder: _resource,
-      ),
-    );
-  }
-
-  /// `POST /v1/media/invites/validate` — checks a token without consuming it.
-  Future<ApiResponse<MediaResource>> validate(String token) {
-    return withMediaErrors(
-      () => _client.post<MediaResource>(
-        '/media/invites/validate',
-        body: <String, dynamic>{'token': token},
-        decoder: _resource,
-      ),
-    );
-  }
-
-  /// `POST /v1/media/invites/accept` — consumes an invitation token.
-  Future<ApiResponse<MediaResource>> accept(String token) {
-    return withMediaErrors(
-      () => _client.post<MediaResource>(
-        '/media/invites/accept',
-        body: <String, dynamic>{'token': token},
-        decoder: _resource,
-      ),
-    );
-  }
-
-  /// `GET /v1/media/join/:token` — resolves a share link.
-  ///
-  /// Unauthenticated: any holder of the token may resolve it. Expiry and
-  /// use-count limits are enforced server-side.
-  Future<ApiResponse<MediaResource>> resolveLink(String token) {
-    return withMediaErrors(
-      () => _client.get<MediaResource>(
-        '/media/join/${encodeSegment(token)}',
-        decoder: _resource,
-      ),
-    );
-  }
 }
 
 /// The composition root for the Media module.
@@ -1539,11 +1070,14 @@ class MediaInvitesModule {
 /// // Moderate (requires the host to be signed in)
 /// await superso.media.moderation.mute(sessionId, participantId);
 ///
-/// // Whiteboard
-/// final board = await superso.media.whiteboard.start(
-///   sessionId,
-///   allowParticipantDraw: true,
-/// );
+/// // Publish: join the signaling socket, then drive your own WebRTC plugin
+/// final connection = await superso.media.publishers.join(session.data.id);
+/// connection.onReady.listen((ready) {
+///   // configure your RTCPeerConnection with ready.iceServers, add camera/mic
+///   // tracks, create an offer, then: connection.sendOffer(offer.sdp);
+/// });
+/// connection.onAnswer.listen((answer) { /* setRemoteDescription(answer) */ });
+/// connection.onIceCandidate.listen((c) { /* addIceCandidate(c) */ });
 /// ```
 class MediaModule implements SdkModule, Disposable {
   /// Creates the media module bound to [client].
@@ -1552,11 +1086,12 @@ class MediaModule implements SdkModule, Disposable {
         participants = MediaParticipantsModule(client),
         permissions = MediaPermissionsModule(client),
         moderation = MediaModerationModule(client),
-        whiteboard = MediaWhiteboardModule(client),
         classroom = MediaClassroomModule(client),
         voiceRooms = MediaVoiceRoomsModule(client),
         rooms = MediaRoomsModule(client),
-        invites = MediaInvitesModule(client),
+        publishers = MediaPublishersModule(client),
+        subscribers = MediaSubscribersModule(client),
+        websocket = MediaSignalingConnection(client),
         _client = client;
 
   @override
@@ -1576,20 +1111,25 @@ class MediaModule implements SdkModule, Disposable {
   /// Host moderation. Requires an end-user access token.
   final MediaModerationModule moderation;
 
-  /// The collaborative whiteboard.
-  final MediaWhiteboardModule whiteboard;
-
   /// The classroom engine.
   final MediaClassroomModule classroom;
 
   /// Voice rooms.
   final MediaVoiceRoomsModule voiceRooms;
 
-  /// Breakout rooms, waiting room, and lobby chat.
+  /// Breakout rooms and the waiting room.
   final MediaRoomsModule rooms;
 
-  /// Invitations and share links.
-  final MediaInvitesModule invites;
+  /// Publisher-role raw WebRTC signaling (docs/media.md §12).
+  final MediaPublishersModule publishers;
+
+  /// Subscriber-role raw WebRTC signaling (docs/media.md §13).
+  final MediaSubscribersModule subscribers;
+
+  /// The raw WebRTC signaling transport (`GET /v1/media/signal`),
+  /// independent of [publishers]/[subscribers] — open it directly with
+  /// either role via [MediaSignalingConnection.connect].
+  final MediaSignalingConnection websocket;
 
   final Map<String, RealtimeSocket> _sockets = <String, RealtimeSocket>{};
 
@@ -1668,7 +1208,14 @@ class MediaModule implements SdkModule, Disposable {
   }
 
   @override
-  Future<void> dispose() => disconnectAll();
+  Future<void> dispose() async {
+    await Future.wait(<Future<void>>[
+      disconnectAll(),
+      websocket.dispose(),
+      publishers.connection.dispose(),
+      subscribers.connection.dispose(),
+    ]);
+  }
 }
 
 /// A decoded realtime event from a session channel.
@@ -1711,10 +1258,6 @@ class MediaEvent {
 
   /// The payload decoded as a session.
   MediaSession get asSession => MediaSession.fromJson(dataAsMap);
-
-  /// The payload decoded as a whiteboard action.
-  WhiteboardAction get asWhiteboardAction =>
-      WhiteboardAction.fromJson(dataAsMap);
 
   @override
   String toString() => 'MediaEvent($event)';

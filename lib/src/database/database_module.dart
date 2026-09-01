@@ -1,10 +1,9 @@
-/// The Database module: collections, documents, queries, batches, and
-/// transactions.
+/// The Database module: collections, documents, queries, and batches.
 ///
 /// Dart port of `supersosdk/src/database/{collections,documents,queries,
-/// batch,transactions,database,converters,pagination}.ts`, consolidated into
-/// one library because the Dart submodules are thin and splitting them across
-/// eight files would add imports without adding clarity.
+/// batch,database,converters,pagination}.ts`, consolidated into one library
+/// because the Dart submodules are thin and splitting them across seven files
+/// would add imports without adding clarity.
 library;
 
 import '../client/superso_http_client.dart';
@@ -560,8 +559,7 @@ class DatabaseModule implements SdkModule {
   /// request.
   ///
   /// Operations are applied independently: a failure in one does not roll back
-  /// the others, and the result reports both counts. Use [transaction] when
-  /// all-or-nothing semantics are required.
+  /// the others, and the result reports both counts.
   ///
   /// Throws a [ValidationError] if more than [maxBatchOperations] are supplied,
   /// rather than letting the server reject the whole request.
@@ -583,34 +581,6 @@ class DatabaseModule implements SdkModule {
               operations.map((o) => o.toJson()).toList(growable: false),
         },
         decoder: (data) => DatabaseBatchResult.fromJson(
-          data as Map<String, dynamic>? ?? const <String, dynamic>{},
-        ),
-      ),
-    );
-  }
-
-  /// `POST /database/transactions` — applies every operation inside a single
-  /// PostgreSQL transaction.
-  ///
-  /// Rolls back entirely on any failure, surfacing a [TransactionFailedError];
-  /// a completed call therefore always means every operation succeeded.
-  Future<ApiResponse<DatabaseTransactionResult>> transaction(
-    List<DatabaseBatchOperation> operations,
-  ) {
-    if (operations.length > maxBatchOperations) {
-      throw ValidationError(
-        'A transaction accepts at most $maxBatchOperations operations; '
-        '${operations.length} were supplied.',
-      );
-    }
-    return withDatabaseErrors(
-      () => client.post<DatabaseTransactionResult>(
-        '/database/transactions',
-        body: <String, dynamic>{
-          'operations':
-              operations.map((o) => o.toJson()).toList(growable: false),
-        },
-        decoder: (data) => DatabaseTransactionResult.fromJson(
           data as Map<String, dynamic>? ?? const <String, dynamic>{},
         ),
       ),

@@ -76,24 +76,6 @@ class PermissionDeniedError extends DatabaseError {
         );
 }
 
-/// `409 TRANSACTION_FAILED` — the transaction rolled back; no operation was
-/// persisted.
-///
-/// Distinct from a `409 DOCUMENT_EXISTS`/`COLLECTION_EXISTS` conflict, which
-/// the shared [ConflictError] already covers.
-class TransactionFailedError extends DatabaseError {
-  /// Creates the error.
-  const TransactionFailedError([
-    String message = 'Transaction rolled back — no changes were persisted.',
-    Object? details,
-  ]) : super(
-          message,
-          errorCode: 'TRANSACTION_FAILED',
-          status: 409,
-          details: details,
-        );
-}
-
 /// `400 RESERVED_FIELD_CONFLICT` — the payload contains a top-level key
 /// matching a reserved system *identity* field (`id`, `doc_id`, `collection`,
 /// `path`, `project_id`, `version`, `size_bytes`, `created_by`, `updated_by`,
@@ -200,8 +182,6 @@ SupersoError mapDatabaseError(Object error) {
     case 'ACCESS_DENIED':
     case 'FORBIDDEN':
       return PermissionDeniedError(message, details);
-    case 'TRANSACTION_FAILED':
-      return TransactionFailedError(message, details);
     case 'RESERVED_FIELD_CONFLICT':
       return ReservedFieldConflictError(message, details);
     case 'QUERY_PATTERN_INVALID':

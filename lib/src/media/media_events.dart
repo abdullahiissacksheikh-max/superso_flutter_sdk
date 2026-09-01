@@ -43,8 +43,14 @@ abstract final class MediaParticipantEvents {
   /// A participant reconnected within the grace window.
   static const String reconnected = 'participant_reconnected';
 
-  /// A participant's record changed.
-  static const String updated = 'participant_updated';
+  // NOTE: there is no generic `participant_updated` event. It was removed
+  // from here in the v0.3.1 Moderation + Waiting Room audit after checking
+  // every `broadcastMedia`/`permEvent`/`stageEvent` call site in the Go
+  // backend and finding none that emit it — it had slipped in as a
+  // plausible-looking but fictitious name, the same class of bug this
+  // catalogue's own header comment already warns about. Each moderation
+  // action emits its own specifically-named event instead — see [muted],
+  // [pinned], [videoHidden], [kicked], etc. below.
 
   /// A publisher joined.
   static const String publisherJoined = 'publisher_joined';
@@ -75,6 +81,14 @@ abstract final class MediaParticipantEvents {
 
   /// A participant's spotlight was removed.
   static const String unspotlighted = 'participant_unspotlighted';
+
+  /// A host (Admin or SDK) kicked a participant from the session.
+  ///
+  /// Added in v0.3.1: `MediaServices.KickParticipant` previously updated
+  /// state and tore down the SFU connection without broadcasting anything —
+  /// this name was already documented but not yet actually dispatched. It
+  /// now is, alongside every sibling moderation event in this class.
+  static const String kicked = 'participant_kicked';
 
   /// A participant was promoted to publisher.
   static const String promoted = 'participant_promoted';
@@ -150,6 +164,47 @@ abstract final class MediaStageEvents {
 
   /// A participant raised their hand.
   static const String handRaised = 'stage.hand_raised';
+
+  /// A participant lowered their hand.
+  ///
+  /// Added in v0.3.1 — this catalogue previously had no counterpart to
+  /// [handRaised], but the backend does dispatch this real event from
+  /// `MediaServices.StageLowerHand`, the self-service `lower-hand` route
+  /// behind `lowerHand()`.
+  static const String handLowered = 'stage.hand_lowered';
+
+  /// A participant accepted the host's stage invitation.
+  ///
+  /// Added in v0.3.1. Dispatched by `MediaServices.AcceptStageInvite`, the
+  /// self-service route behind `acceptStageInvite()`.
+  static const String inviteAccepted = 'stage.invite_accepted';
+
+  /// A participant declined the host's stage invitation.
+  ///
+  /// Added in v0.3.1. Dispatched by `MediaServices.DeclineStageInvite`, the
+  /// self-service route behind `declineStageInvite()`.
+  static const String inviteDeclined = 'stage.invite_declined';
+
+  // Screen-share self-service (StageService in service/media_services.go).
+  // Distinct from [MediaPermissionEvents.screenShareStarted]/
+  // [MediaPermissionEvents.screenShareStopped] below — these two event
+  // families come from different subsystems that both happen to touch
+  // screen sharing; neither supersedes the other.
+
+  /// A participant signalled intent to share their screen.
+  static const String screenShareRequested = 'stage.screen_share_requested';
+
+  /// A host approved a screen-share request.
+  static const String screenShareApproved = 'stage.screen_share_approved';
+
+  /// A host rejected a screen-share request.
+  static const String screenShareRejected = 'stage.screen_share_rejected';
+
+  /// A host revoked an active screen share.
+  static const String screenShareRevoked = 'stage.screen_share_revoked';
+
+  /// A participant stopped their own screen share.
+  static const String screenShareStopped = 'stage.screen_share_stopped';
 }
 
 /// Voice-room event names.
@@ -192,45 +247,21 @@ abstract final class MediaVoiceEvents {
 }
 
 /// Classroom-engine event names.
+///
+/// This class originally also carried Reactions/Polls/Classroom Hand Raise
+/// event names (`classroom.reaction`, `classroom.poll_*`,
+/// `classroom.hand_raised`, `classroom.hand_lowered`, `classroom.stage_locked`,
+/// `classroom.stage_unlocked`). Those six features (Classroom, Polls,
+/// Whiteboard, Reactions, Chat, Webhooks) were removed from Media Core — see
+/// docs/media.md. Attendance, Speaker Queue, and Classroom role
+/// assignment/force-mute are separate, still-supported features that
+/// happened to share this class name; it is kept as-is (not renamed).
 abstract final class MediaClassroomEvents {
-  /// A reaction was sent.
-  static const String reaction = 'classroom.reaction';
-
-  /// A poll was created.
-  static const String pollCreated = 'classroom.poll_created';
-
-  /// A poll was activated.
-  static const String pollActivated = 'classroom.poll_activated';
-
-  /// A poll ended.
-  static const String pollEnded = 'classroom.poll_ended';
-
-  /// Poll results were published.
-  static const String pollResults = 'classroom.poll_results';
-
-  /// A vote was received.
-  static const String pollVoteReceived = 'classroom.poll_vote_received';
-
   /// Attendance was recorded on join.
   static const String attendanceJoined = 'classroom.attendance_joined';
 
   /// Attendance was recorded on leave.
   static const String attendanceLeft = 'classroom.attendance_left';
-
-  /// A chat message was sent.
-  static const String chatMessage = 'classroom.chat_message';
-
-  /// A chat message was pinned.
-  static const String chatMessagePinned = 'classroom.chat_message_pinned';
-
-  /// A chat message was unpinned.
-  static const String chatMessageUnpinned = 'classroom.chat_message_unpinned';
-
-  /// A chat message was deleted.
-  static const String chatMessageDeleted = 'classroom.chat_message_deleted';
-
-  /// A reaction was added to a chat message.
-  static const String chatMessageReaction = 'classroom.chat_message_reaction';
 
   /// A speaker was promoted from the queue.
   static const String speakerPromoted = 'classroom.speaker_promoted';
@@ -244,60 +275,14 @@ abstract final class MediaClassroomEvents {
   /// A participant's classroom role changed.
   static const String roleChanged = 'classroom.role_changed';
 
-  /// A hand was raised.
-  static const String handRaised = 'classroom.hand_raised';
-
-  /// A hand was lowered.
-  static const String handLowered = 'classroom.hand_lowered';
-
   /// A participant was force-muted.
   static const String forceMuted = 'classroom.force_muted';
 
   /// A force-mute was cleared.
   static const String forceMuteCleared = 'classroom.force_mute_cleared';
-
-  /// The stage was locked.
-  static const String stageLocked = 'classroom.stage_locked';
-
-  /// The stage was unlocked.
-  static const String stageUnlocked = 'classroom.stage_unlocked';
 }
 
-/// Whiteboard event names.
-abstract final class MediaWhiteboardEvents {
-  /// A whiteboard was opened.
-  static const String started = 'classroom.whiteboard_started';
-
-  /// A whiteboard was closed.
-  static const String ended = 'classroom.whiteboard_ended';
-
-  /// Draw permissions changed.
-  static const String permissionsUpdated =
-      'classroom.whiteboard_permissions_updated';
-
-  /// A freehand stroke was added.
-  static const String stroke = 'classroom.whiteboard_stroke';
-
-  /// A shape or text object was added.
-  static const String objectAdded = 'classroom.whiteboard_object_added';
-
-  /// An object was erased.
-  static const String objectRemoved = 'classroom.whiteboard_object_removed';
-
-  /// The canvas was cleared.
-  static const String cleared = 'classroom.whiteboard_cleared';
-
-  /// An action was undone.
-  static const String undo = 'classroom.whiteboard_undo';
-
-  /// An action was redone.
-  static const String redo = 'classroom.whiteboard_redo';
-
-  /// A cursor position was broadcast. Not persisted.
-  static const String pointer = 'classroom.whiteboard_pointer';
-}
-
-/// Breakout-room, waiting-room, and lobby event names.
+/// Breakout-room and waiting-room event names.
 abstract final class MediaRoomEvents {
   /// A breakout room was created.
   static const String breakoutCreated = 'breakout.created';
@@ -325,13 +310,4 @@ abstract final class MediaRoomEvents {
 
   /// A waiting participant was banned.
   static const String waitingBanned = 'waiting.banned';
-
-  /// A lobby chat message was sent.
-  static const String lobbyMessage = 'lobby.message';
-
-  /// A lobby chat message was deleted.
-  static const String lobbyDeleted = 'lobby.deleted';
-
-  /// Lobby chat was cleared.
-  static const String lobbyCleared = 'lobby.cleared';
 }

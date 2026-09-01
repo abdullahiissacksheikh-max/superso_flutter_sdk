@@ -319,30 +319,6 @@ void main() {
       addTearDown(h.superso.dispose);
     });
 
-    test('a whiteboard draw denial becomes WhiteboardPermissionError',
-        () async {
-      final h = harness(
-        (_) async => fail(
-          403,
-          'WHITEBOARD_DRAW_NOT_PERMITTED',
-          'drawing is not currently permitted',
-        ),
-      );
-      await expectLater(
-        h.superso.media.whiteboard.draw(
-          sessionId: 's1',
-          participantId: 'p1',
-          whiteboardId: 'w1',
-          objectId: 'stroke-1',
-          points: <Map<String, double>>[
-            <String, double>{'x': 1, 'y': 2},
-          ],
-        ),
-        throwsA(isA<WhiteboardPermissionError>()),
-      );
-      addTearDown(h.superso.dispose);
-    });
-
     test('an unassignable classroom role is rejected client-side', () {
       final h = harness((_) async => ok(null));
       expect(
@@ -369,57 +345,6 @@ void main() {
       expect(ClassroomRole.guest.isPrivileged, isFalse);
     });
 
-    test('undo returns null when there is nothing to undo', () async {
-      final h = harness((_) async => ok(null));
-      final action = await h.superso.media.whiteboard.undo(
-        sessionId: 's1',
-        participantId: 'p1',
-        whiteboardId: 'w1',
-      );
-      expect(action, isNull);
-      addTearDown(h.superso.dispose);
-    });
-
-    test('the replay log decodes in sequence order', () async {
-      final h = harness(
-        (_) async => ok(<String, dynamic>{
-          'whiteboard_id': 'w1',
-          'total': 2,
-          'actions': <dynamic>[
-            <String, dynamic>{
-              'id': 'a1',
-              'whiteboard_id': 'w1',
-              'action_type': 'draw',
-              'seq': 1,
-            },
-            <String, dynamic>{
-              'id': 'a2',
-              'whiteboard_id': 'w1',
-              'action_type': 'shape',
-              'seq': 2,
-            },
-          ],
-        }),
-      );
-
-      final log = await h.superso.media.whiteboard.listActions('s1', 'w1');
-      expect(log.data.actions.map((a) => a.seq), <int>[1, 2]);
-      expect(log.data.total, 2);
-      addTearDown(h.superso.dispose);
-    });
-
-    test('a poll with fewer than two options is rejected', () {
-      final h = harness((_) async => ok(null));
-      expect(
-        () => h.superso.media.classroom.createPoll(
-          's1',
-          question: 'Yes?',
-          options: <String>['Only one'],
-        ),
-        throwsA(isA<ValidationError>()),
-      );
-      addTearDown(h.superso.dispose);
-    });
   });
 
   group('NotificationModule', () {

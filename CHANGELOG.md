@@ -2,6 +2,321 @@
 
 All notable changes to `superso_flutter_sdk` are documented in this file.
 
+## 0.3.12
+
+**Public Media endpoint synchronization audit**, mirroring `supersosdk` 0.3.12. Every active Media feature's documented endpoint set was inventoried against `docs/media.md`, the backend routers, and this SDK. One real gap was found and fixed; everything else already matched exactly.
+
+Added:
+
+- `MediaSessionsModule.speakers(sessionId)` — `GET /v1/media/sessions/:sessionId/speakers` (docs §19 "Active Speaker Detection"), exposed as `superso.media.sessions.speakers(sessionId)`. This route was always documented as an SDK (`X-API-Key`) endpoint but the backend only ever registered it on the Admin-JWT router; the Flutter SDK simply had no method for it. The backend gap is now closed (`SDKHandler.GetActiveSpeakers`, delegating to the same, already-implemented `MediaServices.GetActiveSpeakers`), so this is now a real, working call returning `List<MediaParticipant>`.
+
+No routes were removed, renamed, or rerouted through the Admin API. No other gaps were found — every other documented Video/Audio/Voice Room/Screen Share/Participant/Moderation/Waiting Room/Stage/Permission/Breakout Room/Speaker Queue/Analytics/Telemetry endpoint already had a corresponding, correctly-scoped (non-Admin-coupled) SDK method.
+
+## 0.3.11
+
+**Feature removal — Classroom, Polls, Whiteboard, Reactions, Chat, and Webhooks were removed from Media Core**, mirroring `supersosdk` 0.3.11. See `docs/media.md` for the full removal record. This is a breaking change for any caller using the removed methods/event names; there are no replacement endpoints.
+
+Removed from `MediaClassroomModule` (`superso.media.classroom`):
+
+- `sendReaction()`, `reactionSummary()`, `createPoll()`, `listPolls()`, `vote()`, `pollResults()`, `raiseHand()`, `lowerHand()` — the backend Admin routes and SDK routes backing these were removed. The module now exposes only its still-supported subset: `attendanceSummary()`, `listSpeakerQueue()`, `joinSpeakerQueue()`, `leaveSpeakerQueue()` (class kept as `MediaClassroomModule`, not renamed).
+
+Removed from `MediaClassroomEvents`:
+
+- `reaction`, `pollCreated`, `pollActivated`, `pollEnded`, `pollResults`, `pollVoteReceived`, `handRaised`, `handLowered`, `stageLocked`, `stageUnlocked`.
+
+Unaffected (kept as-is): `attendanceJoined`, `attendanceLeft`, `speakerPromoted`, `speakerDone`, `speakerQueueUpdated`, `roleChanged`, `forceMuted`, `forceMuteCleared` — these back still-active Attendance, Speaker Queue, and SDK Moderation functionality. `MediaStageEvents.handRaised`/`handLowered` and `MediaVoiceRoomEvents.handRaised`/`handLowered` are unrelated, unaffected features. The Flutter SDK never implemented Webhooks, Chat, or Whiteboard client methods, so there is no other SDK-facing change for those three features.
+
+## 0.3.10
+
+Analytics + Telemetry audit, mirroring `supersosdk` 0.3.10.
+
+`MediaSessionsModule.timeline()`/`.tracks()`, `MediaModule.usage()`, and
+`MediaParticipantsModule.pushTelemetry()` were verified against the real
+backend and found route-complete, matching the same
+`GET /usage`/`GET /sessions/:id/timeline`/`PATCH /participants/:id/telemetry`
+contract as the JS SDK. `timeline()`/`tracks()`/`usage()` already use this
+SDK's established `List<MediaResource>` pattern (real data accessible via
+`.raw` alongside typed getters), consistent with every other list endpoint
+here — no change needed there.
+
+### Fixed
+
+- `pushTelemetry()` previously discarded the entire response body
+  (`ApiResponse<void>`, `decoder: (_) {}`), even though docs/media.md §25
+  documents the server as returning "the full updated participant object"
+  — the same response `supersosdk`'s `telemetry.push()` already surfaces as
+  a `MediaParticipant`. There was no way to read the just-recomputed
+  `connection_score`/`network_quality` without an extra, separate `get()`
+  call. Now returns `ApiResponse<MediaParticipant>`, decoded with the same
+  `_participant` decoder `get()` already uses.
+
+## 0.3.9
+
+Speaker Queue + Attendance audit, mirroring `supersosdk` 0.3.9. No code
+changes were required in this SDK.
+
+`MediaClassroomModule.listSpeakerQueue()`/`joinSpeakerQueue()`/
+`leaveSpeakerQueue()`/`attendanceSummary()` were verified against the real
+backend and found route-complete, matching the exact same
+`GET/POST/DELETE .../speaker-queue` and `GET .../attendance` contract as
+the JS SDK.
+
+The response-shape bug fixed in `supersosdk` 0.3.9 (bare-array responses
+mistyped as `{ queue: [...] }` / `{ summary: [...] }`) does not affect this
+SDK: `_resourceList`'s decoder already checks `data is List<dynamic>`
+before falling back to a keyed wrapper, so it has always decoded these
+bare-array responses correctly.
+
+## 0.3.8
+
+Breakout Rooms + Classroom audit, mirroring `supersosdk` 0.3.8.
+`MediaRoomsModule`'s 2 breakout-room routes and `MediaClassroomModule`'s 12
+Classroom Engine routes were verified against the real backend and found
+route-complete — all use the generic `MediaResource` wrapper for breakout
+rooms (an established, pre-existing pattern; no incorrect typed fields to
+fix there, unlike the JS SDK's dedicated `BreakoutRoom` interface).
+
+### Fixed
+
+- `MediaClassroomModule.raiseHand()`/`lowerHand()` declared and decoded
+  their response as [MediaParticipant] — but the backend's
+  `SDKClassroomHandler.RaiseHandV7`/`LowerHandV7` respond with `data: null`.
+  Every call silently produced an empty-shell participant (`id: ''`, every
+  other field `null`) instead of reflecting the real (empty) response.
+  Changed both methods' return type to `Future<ApiResponse<void>>`, matching
+  `supersosdk`'s `classroom.raiseHand()`/`lowerHand()`, which already
+  correctly returned `Promise<void>`.
+
+### Added
+
+- `MediaSession` gained the ten Enterprise v7 classroom-configuration
+  fields (`sessionMode`, `classroomMode`, `attendanceEnabled`,
+  `reactionsEnabled`, `pollsEnabled`, `stageLocked`, `speakerTimerSeconds`,
+  `allowSelfUnmute`, `topic`, `spatialAudioEnabled`) for parity with
+  `supersosdk`'s `MediaSession` interface, which already declared these.
+  The backend previously never returned any of these fields on a session
+  response at all (see the backend note below) — `stageLocked` in
+  particular is actively written by `classroom.lockStage`/`unlockStage`,
+  so a host locking the stage had no way to read that state back through
+  any session fetch on either SDK.
+
+### Backend note (not a Flutter SDK change)
+
+`repository.GetSession`/`ListSessions` never selected the ten
+`live_sessions` classroom-configuration columns back out of the database,
+and `dto.SessionResponse` never carried them, so no session response from
+the Admin API or the SDK API included them — regardless of their real
+value in the database. Fixed on the backend; both SDKs now correctly
+receive these fields.
+
+## 0.3.7
+
+Stage + Permission Engine audit, mirroring `supersosdk` 0.3.7.
+`MediaModerationModule`'s stage self-service methods and
+`MediaPermissionsModule`'s six Permission Engine methods were verified
+against the real backend routes and found route-complete. Two real bugs
+found and fixed, plus the same three missing dotted stage events added to
+`supersosdk` 0.3.7 (this SDK already had zero of the three, unlike the JS
+SDK which was missing only two — this codebase never had `stage.hand_raised`
+paired correctly with a `hand_lowered`, nor either invite event).
+
+### Fixed
+
+- `MediaPermissionsModule.requestCamera()`/`requestMicrophone()`/
+  `requestScreen()` declared and decoded their response as
+  [MediaParticipant] — but the backend's `RequestCamera`/`RequestMicrophone`/
+  `RequestScreen` handlers actually respond with a `PermissionRequestResponse`
+  (a request record: `id`, `request_type`, `status`, `reason`, `reviewed_by`,
+  `reviewed_at`, `expires_at`, `created_at`, `updated_at` — a completely
+  different shape). Every call to these three methods was silently decoding
+  the wrong type. Added a new `PermissionRequest` model
+  (`lib/src/media/media_types.dart`, mirroring `supersosdk`'s `PermissionRequest`
+  interface exactly) and changed these three methods' return type to
+  `Future<ApiResponse<PermissionRequest>>`.
+
+### Added
+
+- `MediaStageEvents.handLowered` (`'stage.hand_lowered'`),
+  `.inviteAccepted` (`'stage.invite_accepted'`), `.inviteDeclined`
+  (`'stage.invite_declined'`) — all three are real, dispatched events this
+  catalogue was missing entirely.
+- `PermissionRequest` class (`lib/src/media/media_types.dart`).
+
+## 0.3.6
+
+Moderation + Waiting Room audit, mirroring `supersosdk` 0.3.6.
+`MediaModerationModule` (approve/reject/revoke camera/microphone/screen,
+mute/unmute/forceMute/clearForceMute, hideVideo/showVideo,
+pin/unpin/spotlight/unspotlight, the stage actions, promote/demote,
+assignRole) and `kick` on the participants API were verified against the
+real Go route registration and found complete and correct. The Waiting
+Room's two SDK methods (`enqueueWaitingRoom`, `getWaitingRoomEntry`) were
+verified to correctly and deliberately omit the Admin-JWT-only management
+actions, matching `docs/media.md` exactly.
+
+Two real gaps, both event-catalogue accuracy, neither a route change —
+identical in nature to the two found in `supersosdk` 0.3.6:
+
+1. `MediaParticipantEvents.updated` (`participant_updated`) was modeled but
+   never actually broadcast by any backend code — checked every
+   `broadcastMedia`/`permEvent`/`stageEvent` call site to confirm. Removed.
+2. The backend's `KickParticipant` was fixed (this release's backend
+   change, see the platform-level notes) to finally broadcast
+   `participant_kicked` — a name this catalogue did not yet have. Added as
+   `MediaParticipantEvents.kicked`.
+
+### Added
+
+- `MediaParticipantEvents.kicked` (`'participant_kicked'`).
+
+### Removed
+
+- `MediaParticipantEvents.updated` (`'participant_updated'`) — never
+  dispatched by the backend. Each moderation action already emits its own
+  specifically-named event (`muted`, `pinned`, `videoHidden`, `kicked`,
+  ...); there was never a generic catch-all.
+
+## 0.3.5
+
+Voice Rooms + Screen Share audit, mirroring `supersosdk` 0.3.5. Both
+features' REST/SDK route coverage were already complete and correct
+(`MediaVoiceRoomsModule` and the screen-share methods on
+`MediaPermissionsModule`/`MediaModerationModule` already matched the real
+backend routes exactly, including correctly omitting the Admin-JWT-only
+Voice Room moderation and screen-share-approval actions this SDK's API key
+cannot reach). Two real bugs and one real gap were found and fixed, all in
+`MediaParticipant`.
+
+### Fixed
+
+- `MediaParticipant.handRaised` read a `hand_raised` JSON key that does not
+  exist in any real backend response (docs/media.md §14.7: the field is
+  `hand_raised_at`, a nullable timestamp) — every decoded participant had
+  `handRaised == null` regardless of actual state. Now derived from
+  `hand_raised_at != null`, and the raw timestamp is exposed as the new
+  `handRaisedAt` field.
+- `MediaParticipant.screenSharing` read a `screen_sharing` JSON key that
+  does not exist — the real field is `screen_share_active`. Every decoded
+  participant had `screenSharing == null` regardless of actual state.
+
+### Added
+
+- `MediaParticipant.isSpeaking`, `.audioLevel`, `.lastSpokeAt`,
+  `.totalSpokeSec` (Voice Rooms, docs/media.md §14.7) — previously only
+  reachable via `.raw`.
+- `MediaParticipant.screenPermission`, `.screenRequestedAt`,
+  `.screenStartedAt` (Screen Share) — previously only reachable via `.raw`.
+- `stage.screen_share_requested`, `.screenShareApproved`,
+  `.screenShareRejected`, `.screenShareRevoked`, `.screenShareStopped` to
+  `MediaStageEvents` (`media_events.dart`) — real, broadcast events
+  (`stageEvent()` in `service/media_services.go`) that neither SDK
+  previously modeled, even though `docs/media.md` already documented them.
+
+## 0.3.4
+
+Video/Audio completeness: adds the raw WebRTC signaling transport
+(`GET /v1/media/signal`) that was entirely absent from this SDK's Media
+module. Every other piece of the documented Video/Audio contract (session
+lifecycle, participants, permissions, moderation, telemetry, voice rooms)
+was already implemented and unaffected; this release closes the one real
+gap found in a full audit against `docs/media.md` and `supersosdk`
+(mirrored 1:1 from its `signaling.ts`/`connection.ts`/`websocket.ts`,
+`publishers.ts`, `subscribers.ts`).
+
+This is signaling-transport-only, exactly like `supersosdk`: no WebRTC
+media-capture engine (no `RTCPeerConnection`, no camera/microphone capture)
+is bundled. The host Flutter application supplies its own WebRTC plugin
+(e.g. `flutter_webrtc`) and wires its offer/answer/ICE-candidate calls
+through the connection this module returns — no new package dependency was
+added.
+
+### Added
+
+- `lib/src/media/media_signaling.dart` (new file):
+  - `SignalingRole` enum (`publisher`/`subscriber`).
+  - `IceServerConfig`, `IceCandidatePayload`, `SessionDescriptionPayload`,
+    `MediaSignalingReady`, `MediaSignalingError`, `MediaSignalingInfo`
+    models — Dart port of `supersosdk/src/media/types.ts`'s signaling
+    section.
+  - `MediaSignalingConnection` — the connection class itself. Exchanges
+    `ready`/`offer`/`answer`/`ice_candidate`/`ping`/`pong`/`error` frames
+    over the shared `RealtimeSocket` transport, reconnects automatically
+    with the documented exponential backoff (100ms→200ms→...→30s cap), and
+    exposes `onReady` (carrying the `ice_servers` the docs require the
+    peer connection be configured with — see the `docs/media.md` fixes
+    below), `onOffer`, `onAnswer`, `onIceCandidate`, `onParticipantJoined`,
+    `onParticipantLeft`, `onSessionEnded`, `onError`, `onAuthMissing`,
+    `connectionState`, `state`, `isConnected`, `info()`, `sendOffer()`,
+    `sendAnswer()`, `sendIceCandidate()`, `restartIce()`, `disconnect()`,
+    `dispose()`.
+- `MediaModule.publishers` (`MediaPublishersModule`) and
+  `MediaModule.subscribers` (`MediaSubscribersModule`) — each own a
+  `MediaSignalingConnection` and expose `join(sessionId)` /  `leave()`,
+  matching `supersosdk`'s `media.publishers`/`media.subscribers`.
+- `MediaModule.websocket` — an independent `MediaSignalingConnection` for
+  opening a raw signaling connection directly with either role, matching
+  `supersosdk`'s `media.websocket`.
+- `RealtimeSocket.reconnectAttempts` (`lib/src/realtime/realtime_socket.dart`)
+  — a small additive getter needed by `MediaSignalingInfo`; no existing
+  behavior changed.
+
+### Fixed (documentation only — no other SDK code affected)
+
+- `docs/media.md` §24.1 "Message Protocol": added the `ready` message (the
+  backend has always sent it immediately after connect — `engine/signaling.go`
+  — but no SDK and no version of this document ever modeled it, so neither
+  SDK exposed the ICE server list the docs' own "Locked Systems" section
+  requires the peer connection be configured with). Also removed the false
+  claim that `participant_joined`/`participant_left`/`session_ended` are
+  sent over this socket — they are not; that lifecycle is delivered on the
+  separate `media.<sessionId>` Realtime channel (§24.2), which every SDK
+  already correctly subscribes to.
+- `docs/media.md` §24.2 "Enterprise Events": replaced a stale dotted-name
+  event table (`participant.joined`, `session.started`, `active_speaker`,
+  `hand_raised`, `spotlight_on`, ...) that predated both SDKs' own v0.3.0
+  event-name corrections (see `supersosdk`'s `events.ts` — every one of
+  those dotted names was already documented there as fictitious) with the
+  real, underscore-separated names both SDKs have used correctly all along.
+- `docs/media.md` §12/§13: updated the publisher/subscriber signaling
+  diagrams to show the `ready` step before the offer/answer exchange.
+
+## 0.3.3
+
+Media cleanup: removes obsolete Invitations, Share Links, Lobby Chat, Session
+Chat, and Whiteboard APIs from the Media module, mirroring `supersosdk` 0.3.3
+exactly. These features are being retired platform-wide; the backend no
+longer serves their endpoints. All other Media/Live Classroom functionality
+(sessions, participants, publishers, subscribers, voice rooms, breakout
+rooms, waiting room, tracks, devices, analytics, usage, audit logs, media
+settings, reactions, polls, attendance, speaker queue, stage
+invite/accept/decline, moderation, and classroom controls) is unchanged.
+
+### Removed
+
+- `MediaWhiteboardModule` (`superso.media.whiteboard`) and its ten methods —
+  `start()`, `getActive()`, `end()`, `updatePermissions()`, `clear()`,
+  `listActions()`, `draw()`, `addShape()`, `addText()`, `erase()`, `undo()`,
+  `redo()`, `sendPointer()`.
+- `MediaInvitesModule` (`superso.media.invites`) and its five methods —
+  `create()`, `createLink()`, `validate()`, `accept()`, `resolveLink()`.
+- `MediaClassroomModule.sendChatMessage()` and `.listChat()` (Session Chat).
+- `MediaRoomsModule.listLobbyChat()` and `.sendLobbyMessage()` (Lobby Chat).
+- Models: `WhiteboardSession`, `WhiteboardAction`, `WhiteboardActionLog`
+  (`lib/src/media/media_types.dart`).
+- `WhiteboardPermissionError` (`lib/src/media/media_module.dart`); the
+  `WHITEBOARD_DRAW_NOT_PERMITTED` special case in `withMediaErrors()` is gone
+  along with it.
+- `MediaEvent.asWhiteboardAction` getter.
+- Event catalogues: `MediaWhiteboardEvents` (entire class); the five
+  `classroom.chat_message*` entries from `MediaClassroomEvents`; the three
+  `lobby.*` entries from `MediaRoomEvents` (`lib/src/media/media_events.dart`).
+- `MediaModule.whiteboard` and `MediaModule.invites` fields.
+
+This does **not** touch `acceptStageInvite()` / `declineStageInvite()` /
+`inviteToStage()` (the unrelated "invite a participant onto the stage"
+raise-hand flow), `MediaSession.joinToken` (the unrelated per-session
+identity token), or any other working Media API.
+
 ## 0.3.2
 
 Notification Event Engine completion: mirrors `supersosdk` 0.3.2 exactly. See

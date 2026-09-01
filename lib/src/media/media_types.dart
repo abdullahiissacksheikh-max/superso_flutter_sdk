@@ -192,6 +192,16 @@ class MediaSession {
     this.hostLeftAt,
     this.hostLeaveTimeoutSec,
     this.lastActivityAt,
+    this.sessionMode,
+    this.classroomMode,
+    this.attendanceEnabled,
+    this.reactionsEnabled,
+    this.pollsEnabled,
+    this.stageLocked,
+    this.speakerTimerSeconds,
+    this.allowSelfUnmute,
+    this.topic,
+    this.spatialAudioEnabled,
     this.createdAt,
     this.updatedAt,
   });
@@ -217,6 +227,19 @@ class MediaSession {
         hostLeftAt: json['host_left_at'] as String?,
         hostLeaveTimeoutSec: (json['host_leave_timeout_sec'] as num?)?.toInt(),
         lastActivityAt: json['last_activity_at'] as String?,
+        // Enterprise v7 (migration 010) classroom configuration. Matches
+        // supersosdk's MediaSession fields — see that file's changelog note:
+        // the backend previously never returned these at all.
+        sessionMode: json['session_mode'] as String?,
+        classroomMode: json['classroom_mode'] as bool?,
+        attendanceEnabled: json['attendance_enabled'] as bool?,
+        reactionsEnabled: json['reactions_enabled'] as bool?,
+        pollsEnabled: json['polls_enabled'] as bool?,
+        stageLocked: json['stage_locked'] as bool?,
+        speakerTimerSeconds: (json['speaker_timer_seconds'] as num?)?.toInt(),
+        allowSelfUnmute: json['allow_self_unmute'] as bool?,
+        topic: json['topic'] as String?,
+        spatialAudioEnabled: json['spatial_audio_enabled'] as bool?,
         createdAt: json['created_at'] as String?,
         updatedAt: json['updated_at'] as String?,
       );
@@ -275,6 +298,40 @@ class MediaSession {
   /// ISO-8601 timestamp of the last activity.
   final String? lastActivityAt;
 
+  // ── Enterprise v7 (migration 010) classroom configuration ────────────────
+
+  /// High-level mode: `conference`, `classroom`, `webinar`, or `voice`.
+  final String? sessionMode;
+
+  /// Whether the classroom feature set (attendance/polls/reactions/stage
+  /// lock) is active for this session.
+  final bool? classroomMode;
+
+  /// Whether join/leave events are tracked for this session.
+  final bool? attendanceEnabled;
+
+  /// Whether emoji reactions are allowed during the session.
+  final bool? reactionsEnabled;
+
+  /// Whether the host may create and launch polls.
+  final bool? pollsEnabled;
+
+  /// Whether new stage requests / hand-raise approvals are currently
+  /// blocked. Set by `classroom.lockStage`/`unlockStage` (host only).
+  final bool? stageLocked;
+
+  /// Per-speaker time limit in seconds; `0` means unlimited.
+  final int? speakerTimerSeconds;
+
+  /// When `false`, only the host/teacher can unmute a participant.
+  final bool? allowSelfUnmute;
+
+  /// Optional session topic / agenda.
+  final String? topic;
+
+  /// Placeholder for future spatial-audio support.
+  final bool? spatialAudioEnabled;
+
   /// ISO-8601 creation timestamp.
   final String? createdAt;
 
@@ -314,8 +371,16 @@ class MediaParticipant {
     this.isSpotlighted,
     this.forceMuted,
     this.handRaised,
+    this.handRaisedAt,
     this.cameraEnabled,
     this.screenSharing,
+    this.isSpeaking,
+    this.audioLevel,
+    this.lastSpokeAt,
+    this.totalSpokeSec,
+    this.screenPermission,
+    this.screenRequestedAt,
+    this.screenStartedAt,
     this.status,
     this.joinedAt,
     this.leftAt,
@@ -342,9 +407,23 @@ class MediaParticipant {
         isPinned: json['is_pinned'] as bool?,
         isSpotlighted: json['is_spotlighted'] as bool?,
         forceMuted: json['force_muted'] as bool?,
-        handRaised: json['hand_raised'] as bool?,
+        // The backend has no `hand_raised` boolean field — only
+        // `hand_raised_at` (nullable timestamp, docs/media.md §14.7). This
+        // derives the boolean from it instead of reading a key that never
+        // appears in any real response.
+        handRaised: json['hand_raised_at'] != null,
+        handRaisedAt: json['hand_raised_at'] as String?,
         cameraEnabled: json['camera_enabled'] as bool?,
-        screenSharing: json['screen_sharing'] as bool?,
+        // The backend's real field is `screen_share_active` (docs/media.md
+        // §33's Go model, `screen_share_active`), not `screen_sharing`.
+        screenSharing: json['screen_share_active'] as bool?,
+        isSpeaking: json['is_speaking'] as bool?,
+        audioLevel: (json['audio_level'] as num?)?.toDouble(),
+        lastSpokeAt: json['last_spoke_at'] as String?,
+        totalSpokeSec: (json['total_spoke_sec'] as num?)?.toInt(),
+        screenPermission: json['screen_permission'] as bool?,
+        screenRequestedAt: json['screen_requested_at'] as String?,
+        screenStartedAt: json['screen_started_at'] as String?,
         status: json['status'] as String?,
         joinedAt: json['joined_at'] as String?,
         leftAt: json['left_at'] as String?,
@@ -395,14 +474,39 @@ class MediaParticipant {
   /// Whether a host has force-muted them, preventing self-unmute.
   final bool? forceMuted;
 
-  /// Whether their hand is raised.
+  /// Whether their hand is raised. Derived from [handRaisedAt].
   final bool? handRaised;
+
+  /// ISO-8601 timestamp of when their hand was raised, or `null` if not
+  /// currently raised (docs/media.md §14.7).
+  final String? handRaisedAt;
 
   /// Whether their camera is on.
   final bool? cameraEnabled;
 
-  /// Whether they are sharing a screen.
+  /// Whether they are sharing a screen (`screen_share_active`).
   final bool? screenSharing;
+
+  /// Whether they are currently producing audio (Voice Rooms).
+  final bool? isSpeaking;
+
+  /// Audio level, 0–100 (Voice Rooms).
+  final double? audioLevel;
+
+  /// ISO-8601 timestamp of their last audio activity (Voice Rooms).
+  final String? lastSpokeAt;
+
+  /// Cumulative speaking seconds (Voice Rooms).
+  final int? totalSpokeSec;
+
+  /// Whether the host has granted this participant screen-share permission.
+  final bool? screenPermission;
+
+  /// ISO-8601 timestamp of their last screen-share request.
+  final String? screenRequestedAt;
+
+  /// ISO-8601 timestamp their screen share was last approved/started.
+  final String? screenStartedAt;
 
   /// Participation status, e.g. `joined`, `left`, `kicked`, `banned`.
   final String? status;
@@ -429,9 +533,8 @@ class MediaParticipant {
 /// A generic media resource decoded verbatim.
 ///
 /// The Media module surfaces many small, evolving resources — voice rooms,
-/// breakout rooms, waiting-room entries, lobby messages, invitations, links,
-/// tracks, timeline events, polls, chat messages, speaker-queue entries,
-/// attendance records, whiteboard actions, and analytics.
+/// breakout rooms, waiting-room entries, tracks, timeline events, polls,
+/// speaker-queue entries, attendance records, and analytics.
 ///
 /// Rather than freeze a partial typed model for each — which would silently
 /// drop fields as the platform evolves, and force an SDK release for every
@@ -473,193 +576,6 @@ class MediaResource {
 
   @override
   String toString() => 'MediaResource(${raw.keys.take(4).join(', ')})';
-}
-
-/// A whiteboard, as returned by the whiteboard lifecycle endpoints.
-@immutable
-class WhiteboardSession {
-  /// Creates a whiteboard.
-  const WhiteboardSession({
-    required this.id,
-    required this.sessionId,
-    required this.allowParticipantDraw,
-    required this.raw,
-    this.projectId,
-    this.title,
-    this.status,
-    this.createdBy,
-    this.background,
-    this.startedAt,
-    this.updatedAt,
-  });
-
-  /// Decodes a whiteboard from JSON.
-  factory WhiteboardSession.fromJson(Map<String, dynamic> json) =>
-      WhiteboardSession(
-        id: json['id'] as String? ?? '',
-        sessionId: json['session_id'] as String? ?? '',
-        allowParticipantDraw: json['allow_participant_draw'] as bool? ?? false,
-        raw: json,
-        projectId: json['project_id'] as String?,
-        title: json['title'] as String?,
-        status: json['status'] as String?,
-        createdBy: json['created_by'] as String?,
-        background: json['background'] as String?,
-        startedAt: json['started_at'] as String?,
-        updatedAt: json['updated_at'] as String?,
-      );
-
-  /// Whiteboard identifier.
-  ///
-  /// Each `start` creates a new whiteboard with a new ID; an ID from a
-  /// previous board permanently 404s once superseded.
-  final String id;
-
-  /// The session this whiteboard belongs to.
-  final String sessionId;
-
-  /// Whether non-privileged participants may draw.
-  final bool allowParticipantDraw;
-
-  /// Owning project.
-  final String? projectId;
-
-  /// Display title.
-  final String? title;
-
-  /// `active` or `ended`.
-  final String? status;
-
-  /// The participant who opened it.
-  final String? createdBy;
-
-  /// Background style.
-  final String? background;
-
-  /// ISO-8601 start timestamp.
-  final String? startedAt;
-
-  /// ISO-8601 last-update timestamp.
-  final String? updatedAt;
-
-  /// The complete decoded payload.
-  final Map<String, dynamic> raw;
-
-  @override
-  String toString() =>
-      'WhiteboardSession(id: $id, draw: $allowParticipantDraw)';
-}
-
-/// One entry in a whiteboard's replay log.
-@immutable
-class WhiteboardAction {
-  /// Creates a whiteboard action.
-  const WhiteboardAction({
-    required this.id,
-    required this.whiteboardId,
-    required this.actionType,
-    required this.raw,
-    this.participantId,
-    this.seq,
-    this.objectId,
-    this.color,
-    this.strokeWidth,
-    this.payload,
-    this.reverted,
-    this.createdAt,
-  });
-
-  /// Decodes an action from JSON.
-  factory WhiteboardAction.fromJson(Map<String, dynamic> json) =>
-      WhiteboardAction(
-        id: json['id'] as String? ?? '',
-        whiteboardId: json['whiteboard_id'] as String? ?? '',
-        actionType: json['action_type'] as String? ?? '',
-        raw: json,
-        participantId: json['participant_id'] as String?,
-        seq: (json['seq'] as num?)?.toInt(),
-        objectId: json['object_id'] as String?,
-        color: json['color'] as String?,
-        strokeWidth: (json['stroke_width'] as num?)?.toDouble(),
-        payload: json['payload'],
-        reverted: json['reverted'] as bool?,
-        createdAt: json['created_at'] as String?,
-      );
-
-  /// Action identifier.
-  final String id;
-
-  /// The whiteboard this action belongs to.
-  final String whiteboardId;
-
-  /// `draw`, `shape`, `text`, `erase`, `clear`, `undo`, or `redo`.
-  final String actionType;
-
-  /// The participant who performed it.
-  final String? participantId;
-
-  /// Monotonic sequence number. Replay in ascending order.
-  final int? seq;
-
-  /// The client-supplied stable object identifier.
-  final String? objectId;
-
-  /// Stroke or fill colour.
-  final String? color;
-
-  /// Stroke width.
-  final double? strokeWidth;
-
-  /// Geometry or text content, opaque to the backend.
-  final Object? payload;
-
-  /// Whether this action has been undone.
-  final bool? reverted;
-
-  /// ISO-8601 creation timestamp.
-  final String? createdAt;
-
-  /// The complete decoded payload.
-  final Map<String, dynamic> raw;
-
-  @override
-  String toString() =>
-      'WhiteboardAction(seq: $seq, $actionType, object: $objectId)';
-}
-
-/// The full replay log for a whiteboard.
-@immutable
-class WhiteboardActionLog {
-  /// Creates a replay log.
-  const WhiteboardActionLog({
-    required this.whiteboardId,
-    required this.actions,
-    required this.total,
-  });
-
-  /// Decodes a replay log from JSON.
-  factory WhiteboardActionLog.fromJson(Map<String, dynamic> json) =>
-      WhiteboardActionLog(
-        whiteboardId: json['whiteboard_id'] as String? ?? '',
-        actions: (json['actions'] as List<dynamic>? ?? const <dynamic>[])
-            .whereType<Map<String, dynamic>>()
-            .map(WhiteboardAction.fromJson)
-            .toList(growable: false),
-        total: (json['total'] as num?)?.toInt() ?? 0,
-      );
-
-  /// The whiteboard this log belongs to.
-  final String whiteboardId;
-
-  /// Every current action, in replay order.
-  final List<WhiteboardAction> actions;
-
-  /// How many actions there are.
-  final int total;
-
-  @override
-  String toString() =>
-      'WhiteboardActionLog($whiteboardId, ${actions.length} actions)';
 }
 
 /// A page of sessions.
@@ -716,4 +632,99 @@ class MediaParticipantList {
 
   @override
   String toString() => 'MediaParticipantList(${participants.length} of $total)';
+}
+
+/// A pending, approved, denied, or cancelled permission request.
+///
+/// Returned by `MediaPermissionsModule.requestCamera()`/`requestMicrophone()`/
+/// `requestScreen()` (`backend/internal/modules/media/dto/permission_dto.go`'s
+/// `PermissionRequestResponse`, docs/media.md §39 "Unified Request System").
+///
+/// Added in v0.3.1: these three methods previously declared and decoded
+/// their response as [MediaParticipant], but the backend actually returns
+/// this differently-shaped object — a request record, not a participant.
+/// Every field here mirrors the real JSON keys the backend serializes;
+/// `reviewedBy`/`reviewedAt`/`expiresAt` are `omitempty` on the Go side and
+/// so are nullable here too. `expiresAt` is part of the schema but not yet
+/// enforced by any backend expiration sweep — see docs/media.md's "Unified
+/// Request System" section, which documents `expired` as "TTL-based —
+/// future implementation".
+@immutable
+class PermissionRequest {
+  /// Creates a permission request.
+  const PermissionRequest({
+    required this.id,
+    required this.sessionId,
+    required this.participantId,
+    required this.projectId,
+    required this.requestType,
+    required this.status,
+    required this.createdAt,
+    required this.updatedAt,
+    this.reason,
+    this.reviewedBy,
+    this.reviewedAt,
+    this.expiresAt,
+  });
+
+  /// Decodes a permission request from JSON.
+  factory PermissionRequest.fromJson(Map<String, dynamic> json) =>
+      PermissionRequest(
+        id: json['id'] as String? ?? '',
+        sessionId: json['session_id'] as String? ?? '',
+        participantId: json['participant_id'] as String? ?? '',
+        projectId: json['project_id'] as String? ?? '',
+        requestType: json['request_type'] as String? ?? '',
+        status: json['status'] as String? ?? '',
+        reason: json['reason'] as String?,
+        reviewedBy: json['reviewed_by'] as String?,
+        reviewedAt: json['reviewed_at'] as String?,
+        expiresAt: json['expires_at'] as String?,
+        createdAt: json['created_at'] as String? ?? '',
+        updatedAt: json['updated_at'] as String? ?? '',
+      );
+
+  /// The request's unique identifier.
+  final String id;
+
+  /// The session this request belongs to.
+  final String sessionId;
+
+  /// The participant who created this request.
+  final String participantId;
+
+  /// The owning project.
+  final String projectId;
+
+  /// What is being requested: `camera`, `microphone`, `screen`, `stage`, or
+  /// `speaking`.
+  final String requestType;
+
+  /// The request's current lifecycle state: `pending`, `approved`, `denied`,
+  /// `cancelled`, or (schema-only; not yet produced by any backend sweep)
+  /// `expired`.
+  final String status;
+
+  /// An optional free-text reason the participant supplied.
+  final String? reason;
+
+  /// The participant ID of the host/moderator who reviewed this request.
+  /// Null until reviewed.
+  final String? reviewedBy;
+
+  /// When the request was reviewed. Null until reviewed.
+  final String? reviewedAt;
+
+  /// An optional expiry timestamp. Present in the schema but never
+  /// currently set by any backend code path.
+  final String? expiresAt;
+
+  /// When the request was created.
+  final String createdAt;
+
+  /// When the request was last updated.
+  final String updatedAt;
+
+  @override
+  String toString() => 'PermissionRequest($requestType, $status)';
 }

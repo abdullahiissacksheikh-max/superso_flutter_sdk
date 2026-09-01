@@ -190,6 +190,10 @@ class RealtimeSocket {
   /// Whether the socket is currently connected.
   bool get isConnected => _state == RealtimeConnectionState.connected;
 
+  /// How many reconnect attempts have been made since the last successful
+  /// connection. Reset to zero on every successful [connect].
+  int get reconnectAttempts => _attempt;
+
   /// Opens the connection if it is not already open or opening.
   ///
   /// Safe to call repeatedly; concurrent calls share one attempt.

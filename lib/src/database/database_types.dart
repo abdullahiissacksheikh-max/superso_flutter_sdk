@@ -384,30 +384,6 @@ class DatabaseBatchResult {
       'DatabaseBatchResult(succeeded: $succeeded, failed: $failed)';
 }
 
-/// The `POST /database/transactions` response.
-///
-/// Unlike [DatabaseBatchResult] there is no `failed`/`errors` — this endpoint
-/// wraps every operation in a single PostgreSQL transaction and rolls back
-/// entirely on any failure (returning `409 TRANSACTION_FAILED` rather than a
-/// 200), so a completed call always means every operation succeeded.
-@immutable
-class DatabaseTransactionResult {
-  /// Creates a transaction result.
-  const DatabaseTransactionResult({required this.succeeded});
-
-  /// Decodes a transaction result from JSON.
-  factory DatabaseTransactionResult.fromJson(Map<String, dynamic> json) =>
-      DatabaseTransactionResult(
-        succeeded: (json['succeeded'] as num?)?.toInt() ?? 0,
-      );
-
-  /// Number of operations committed.
-  final int succeeded;
-
-  @override
-  String toString() => 'DatabaseTransactionResult(succeeded: $succeeded)';
-}
-
 /// The kind of write a [DatabaseBatchOperation] performs.
 enum DatabaseBatchOperationType {
   /// Create a new document.
@@ -428,7 +404,7 @@ enum DatabaseBatchOperationType {
   final String wireValue;
 }
 
-/// A single operation inside a batch or transaction.
+/// A single operation inside a batch.
 @immutable
 class DatabaseBatchOperation {
   /// Creates a batch operation.

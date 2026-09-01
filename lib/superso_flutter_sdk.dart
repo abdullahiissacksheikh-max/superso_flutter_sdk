@@ -126,8 +126,7 @@ class Superso implements Disposable {
   /// Authentication — sign-up, sign-in, OTP, OAuth, profile, user management.
   late final AuthModule auth;
 
-  /// Document database — collections, documents, queries, batches,
-  /// transactions.
+  /// Document database — collections, documents, queries, batches.
   late final DatabaseModule database;
 
   /// File storage — buckets, uploads, downloads, chunked sessions, and
@@ -138,7 +137,8 @@ class Superso implements Disposable {
   late final RealtimeModule realtime;
 
   /// Media — sessions, participants, moderation, voice rooms, classroom,
-  /// whiteboard, breakout rooms, and realtime session events.
+  /// breakout rooms, raw WebRTC signaling (publishers/subscribers), and
+  /// realtime session events.
   late final MediaModule media;
 
   /// Notifications — send, broadcast, trigger, inbox, templates, schedules,
