@@ -843,10 +843,10 @@ class NotificationEvent {
         // `is_active` keeps this resilient if an older backend response
         // (pre-v0.3.1) is ever decoded, since `active` did not exist before.
         active: json['active'] as bool? ?? json['is_active'] as bool? ?? false,
-        mappedChannels: (json['mapped_channels'] as List<dynamic>? ??
-                const <dynamic>[])
-            .map((c) => NotificationChannel.fromWire(c as String?))
-            .toList(growable: false),
+        mappedChannels:
+            (json['mapped_channels'] as List<dynamic>? ?? const <dynamic>[])
+                .map((c) => NotificationChannel.fromWire(c as String?))
+                .toList(growable: false),
         templates: (json['templates'] as List<dynamic>? ?? const <dynamic>[])
             .whereType<Map<String, dynamic>>()
             .map(EventTemplateMapping.fromJson)

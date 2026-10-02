@@ -1,11 +1,17 @@
-/// The Media module: sessions, participants, moderation, permissions, voice
-/// rooms, classroom, breakout rooms, waiting room, raw WebRTC signaling,
-/// telemetry, analytics, and realtime events.
+/// The Media module (Superso Media Engine v0.4.0): sessions, admission,
+/// participants, self-service permissions, host moderation, voice rooms,
+/// breakout rooms, waiting room, speaker queue, attendance, settings,
+/// analytics, raw WebRTC signaling and realtime events.
 ///
-/// Dart port of `supersosdk/src/media/*`.
+/// Every route here is declared by `register()` in
+/// `backend/internal/modules/media/api/routes.go` and documented in
+/// `docs/internal/MEDIA_CANONICAL_CONTRACT.md` (§9.1 and the §14 addendum).
+/// Auth legend used in the doc comments: R/W/D = API-key scope
+/// read/write/delete, U = end-user access token, H = privileged participant
+/// of the session, P = participant proof (the participant's token sent as
+/// `X-Media-Participant-Token`, or the access token of that participant's
+/// user).
 library;
-
-import 'dart:async';
 
 import '../client/superso_http_client.dart';
 import '../errors/superso_error.dart';
@@ -13,143 +19,185 @@ import '../interfaces/sdk_module.dart';
 import '../realtime/realtime_socket.dart';
 import '../types/common.dart';
 import '../utils/url.dart';
+import 'media_errors.dart';
 import 'media_signaling.dart';
+import 'media_tokens.dart';
 import 'media_types.dart';
 
-/// Base class for every Media-domain error.
-class MediaError extends SupersoError {
-  /// Creates a media error.
-  const MediaError(
-    String message, {
-    int? status,
-    String? code,
-    Object? details,
-  }) : super(message: message, status: status, code: code, details: details);
-}
+// ── Shared helpers ──────────────────────────────────────────────────────────
 
-/// A moderation call was rejected because the caller lacks host standing.
-///
-/// Every moderation route requires an end-user access token belonging to that
-/// session's host, teacher, assistant teacher, co-host, or moderator. Being
-/// merely authenticated is not sufficient, and an API key alone never is.
-///
-/// If you see this unexpectedly, check that `auth.login()` has run and that
-/// the signed-in user actually holds a privileged role in *this* session.
-class HostAuthorizationError extends MediaError {
-  /// Creates a host-authorization error.
-  const HostAuthorizationError(
-    String message, [
-    Object? details,
-  ]) : super(
-          message,
-          status: 403,
-          code: 'HOST_AUTHORIZATION_REQUIRED',
-          details: details,
-        );
-}
+Map<String, dynamic> _json(Object? data) =>
+    (data is Map<String, dynamic>) ? data : const <String, dynamic>{};
 
-/// Extracts the backend's machine-readable `code` from an error payload.
-///
-/// The platform sends two shapes depending on the endpoint — the error object
-/// directly (`{code, message}`) or nested under `error` — and the shared client
-/// may hand either one through as `details`. Both are checked, so callers never
-/// have to care which endpoint produced the failure.
-String? mediaErrorCode(Object? details) {
-  if (details is! Map<String, dynamic>) return null;
-  final direct = details['code'];
-  if (direct is String) return direct;
-  final nested = details['error'];
-  if (nested is Map<String, dynamic>) {
-    final code = nested['code'];
-    if (code is String) return code;
-  }
-  return null;
-}
+List<Map<String, dynamic>> _jsonList(Object? value) => (value is List<dynamic>)
+    ? value.whereType<Map<String, dynamic>>().toList(growable: false)
+    : const <Map<String, dynamic>>[];
 
-/// Wraps a Media call, normalizing failures into this hierarchy.
-Future<T> withMediaErrors<T>(Future<T> Function() operation) async {
-  try {
-    return await operation();
-  } on AuthenticationError {
-    rethrow;
-  } on RateLimitError {
-    rethrow;
-  } on NetworkError {
-    rethrow;
-  } on CancelledError {
-    rethrow;
-  } on PermissionError catch (error) {
-    throw HostAuthorizationError(error.message, error.details);
-  } on SupersoError catch (error) {
-    throw MediaError(
-      error.message,
-      status: error.status,
-      code: error.code,
-      details: error.details,
-    );
-  } on Object catch (error) {
-    throw MediaError('$error');
-  }
-}
+MediaSession _session(Object? data) => MediaSession.fromJson(_json(data));
+
+MediaParticipant _participant(Object? data) =>
+    MediaParticipant.fromJson(_json(data));
+
+MediaResource _resource(Object? data) => MediaResource.fromJson(_json(data));
+
+MediaPage<MediaResource> _resourcePage(Object? data) =>
+    MediaPage<MediaResource>.fromJson(_json(data), MediaResource.fromJson);
+
+MediaParticipantList _participantList(Object? data) =>
+    MediaParticipantList.fromJson(_json(data));
+
+MediaSelfServiceResult _selfResult(Object? data) =>
+    MediaSelfServiceResult.fromJson(_json(data));
+
+MediaWaitingEntry _waitingEntry(Object? data) =>
+    MediaWaitingEntry.fromJson(_json(data));
+
+MediaBreakoutRoom _breakoutRoom(Object? data) =>
+    MediaBreakoutRoom.fromJson(_json(data));
+
+MediaSpeakerQueueEntry _speakerEntry(Object? data) =>
+    MediaSpeakerQueueEntry.fromJson(_json(data));
+
+void _ack(Object? _) {}
 
 String _sessionPath(String sessionId, [String suffix = '']) =>
-    '/media/sessions/${encodeSegment(sessionId)}'
-    '${suffix.isEmpty ? '' : '/$suffix'}';
+    '/media/sessions/${encodeSegment(sessionId)}$suffix';
 
-String _participantPath(String sessionId, String participantId, String action) =>
-    '/media/sessions/${encodeSegment(sessionId)}'
-    '/participants/${encodeSegment(participantId)}/$action';
-
-MediaResource _resource(Object? data) => MediaResource.fromJson(
-      data as Map<String, dynamic>? ?? const <String, dynamic>{},
+String _sessionParticipantPath(
+  String sessionId,
+  String participantId, [
+  String suffix = '',
+]) =>
+    _sessionPath(
+      sessionId,
+      '/participants/${encodeSegment(participantId)}$suffix',
     );
 
-List<MediaResource> _resourceList(Object? data, [String? key]) {
-  final list = data is List<dynamic>
-      ? data
-      : (data as Map<String, dynamic>?)?[key ?? 'items'] as List<dynamic>? ??
-          const <dynamic>[];
-  return list
-      .whereType<Map<String, dynamic>>()
-      .map(MediaResource.fromJson)
-      .toList(growable: false);
+String _voicePath(String roomId, [String suffix = '']) =>
+    '/media/voice-rooms/${encodeSegment(roomId)}$suffix';
+
+/// Request options carrying a participant token, or `null` when there is no
+/// token (the call then relies on the end-user access token, if any).
+RequestOptions? _asParticipant(String? participantToken) =>
+    participantToken == null || participantToken.isEmpty
+        ? null
+        : RequestOptions(
+            headers: <String, String>{
+              mediaParticipantTokenHeader: participantToken,
+            },
+          );
+
+/// The participant-list filters of contract §14.
+Map<String, Object?> _participantQuery({
+  String? status,
+  bool? publishersOnly,
+  bool? isPublisher,
+  String? voiceRole,
+  int? limit,
+  int? offset,
+}) =>
+    <String, Object?>{
+      'status': status,
+      'publishers_only': publishersOnly == true ? 'true' : null,
+      'is_publisher': isPublisher,
+      'voice_role': voiceRole,
+      'limit': limit,
+      'offset': offset,
+    };
+
+Map<String, Object?> _pageQuery(int? limit, int? offset) =>
+    <String, Object?>{'limit': limit, 'offset': offset};
+
+Map<String, dynamic>? _reasonBody(String? reason) =>
+    reason == null ? null : <String, dynamic>{'reason': reason};
+
+/// `POST …/join` shared by sessions and voice rooms. Stores the issued
+/// participant token in [tokens].
+Future<ApiResponse<MediaJoinResult>> _join(
+  SupersoHttpClient client,
+  MediaParticipantTokens tokens,
+  String path,
+  String sessionId, {
+  String? displayName,
+  String? password,
+  String? joinToken,
+  String? participantToken,
+  bool resume = true,
+  String? platform,
+  String? sdkVersion,
+  String? appVersion,
+  String? networkType,
+}) async {
+  final resumeToken =
+      participantToken ?? (resume ? tokens.forSession(sessionId) : null);
+  final response = await withMediaErrors(
+    () => client.post<MediaJoinResult>(
+      path,
+      body: <String, dynamic>{
+        if (displayName != null) 'display_name': displayName,
+        if (password != null) 'password': password,
+        if (joinToken != null) 'join_token': joinToken,
+        if (resumeToken != null && resumeToken.isNotEmpty)
+          'participant_token': resumeToken,
+        if (platform != null) 'platform': platform,
+        if (sdkVersion != null) 'sdk_version': sdkVersion,
+        if (appVersion != null) 'app_version': appVersion,
+        if (networkType != null) 'network_type': networkType,
+      },
+      decoder: (data) => MediaJoinResult.fromJson(_json(data)),
+    ),
+  );
+  final result = response.data;
+  if (result.participantToken.isNotEmpty && result.participant.id.isNotEmpty) {
+    tokens.store(
+      sessionId: sessionId,
+      participantId: result.participant.id,
+      token: result.participantToken,
+      expiresAt: result.participantTokenExpiresAt,
+    );
+  }
+  return response;
 }
 
-MediaParticipant _participant(Object? data) => MediaParticipant.fromJson(
-      data as Map<String, dynamic>? ?? const <String, dynamic>{},
-    );
+// ── Sessions ────────────────────────────────────────────────────────────────
 
-PermissionRequest _permissionRequest(Object? data) =>
-    PermissionRequest.fromJson(
-      data as Map<String, dynamic>? ?? const <String, dynamic>{},
-    );
-
-MediaSession _session(Object? data) => MediaSession.fromJson(
-      data as Map<String, dynamic>? ?? const <String, dynamic>{},
-    );
-
-/// Session lifecycle.
+/// Session lifecycle, admission and the caller's own participant state.
 ///
 /// Exposed at `superso.media.sessions`.
 class MediaSessionsModule {
-  /// Creates a sessions module bound to [client].
-  const MediaSessionsModule(this._client);
+  /// Creates a sessions module.
+  MediaSessionsModule(this._client, this._tokens);
 
   final SupersoHttpClient _client;
+  final MediaParticipantTokens _tokens;
 
-  /// `POST /v1/media/sessions` — creates a session.
+  /// `POST /media/sessions` (W, U optional) — creates a session.
   ///
-  /// If an end-user access token is set, that user becomes the session's
-  /// `createdBy` and will automatically become its host the first time they
-  /// join. Sign in before calling this if you want the creator to be able to
-  /// moderate.
+  /// With an end-user access token set, that user owns the session and
+  /// becomes its host on first join. A trusted server without a user token
+  /// may designate the owner with [hostUserId]. Omitted booleans fall back
+  /// to project settings (`waiting_room_default`, `screen_share_default`) or
+  /// the documented defaults.
   Future<ApiResponse<MediaSession>> create({
     required String title,
+    String? description,
     String? type,
     String? visibility,
-    String? description,
+    String? password,
+    String? sessionMode,
+    int? maxPublishers,
+    int? maxParticipants,
+    bool? waitingRoom,
+    bool? screenShareEnabled,
+    bool? guestAllowed,
+    bool? attendanceEnabled,
+    bool? allowSelfUnmute,
+    int? hostLeaveTimeoutSec,
+    String? topic,
     String? scheduledAt,
-    Map<String, dynamic>? settings,
+    String? expiresAt,
+    Map<String, dynamic>? metadata,
+    String? hostUserId,
   }) {
     if (title.trim().isEmpty) {
       throw const ValidationError('Superso: a session title is required.');
@@ -159,20 +207,37 @@ class MediaSessionsModule {
         '/media/sessions',
         body: <String, dynamic>{
           'title': title,
+          if (description != null) 'description': description,
           if (type != null) 'type': type,
           if (visibility != null) 'visibility': visibility,
-          if (description != null) 'description': description,
+          if (password != null) 'password': password,
+          if (sessionMode != null) 'session_mode': sessionMode,
+          if (maxPublishers != null) 'max_publishers': maxPublishers,
+          if (maxParticipants != null) 'max_participants': maxParticipants,
+          if (waitingRoom != null) 'waiting_room': waitingRoom,
+          if (screenShareEnabled != null)
+            'screen_share_enabled': screenShareEnabled,
+          if (guestAllowed != null) 'guest_allowed': guestAllowed,
+          if (attendanceEnabled != null)
+            'attendance_enabled': attendanceEnabled,
+          if (allowSelfUnmute != null) 'allow_self_unmute': allowSelfUnmute,
+          if (hostLeaveTimeoutSec != null)
+            'host_leave_timeout_sec': hostLeaveTimeoutSec,
+          if (topic != null) 'topic': topic,
           if (scheduledAt != null) 'scheduled_at': scheduledAt,
-          if (settings != null) ...settings,
+          if (expiresAt != null) 'expires_at': expiresAt,
+          if (metadata != null) 'metadata': metadata,
+          if (hostUserId != null) 'host_user_id': hostUserId,
         },
         decoder: _session,
       ),
     );
   }
 
-  /// `GET /v1/media/sessions` — lists sessions.
+  /// `GET /media/sessions` (R) — paginated; filters `status`, `voice_room`.
   Future<ApiResponse<MediaSessionList>> list({
     String? status,
+    bool? voiceRoom,
     int? limit,
     int? offset,
   }) {
@@ -182,18 +247,30 @@ class MediaSessionsModule {
         options: RequestOptions(
           query: <String, Object?>{
             'status': status,
+            'voice_room': voiceRoom,
             'limit': limit,
             'offset': offset,
           },
         ),
-        decoder: (data) => MediaSessionList.fromJson(
-          data as Map<String, dynamic>? ?? const <String, dynamic>{},
-        ),
+        decoder: (data) => MediaSessionList.fromJson(_json(data)),
       ),
     );
   }
 
-  /// `GET /v1/media/sessions/:sessionId`
+  /// `GET /media/sessions/by-join-token` (R) — `{session, valid}`.
+  Future<ApiResponse<MediaJoinTokenResolution>> byJoinToken(String joinToken) {
+    return withMediaErrors(
+      () => _client.get<MediaJoinTokenResolution>(
+        '/media/sessions/by-join-token',
+        options: RequestOptions(
+          query: <String, Object?>{'join_token': joinToken},
+        ),
+        decoder: (data) => MediaJoinTokenResolution.fromJson(_json(data)),
+      ),
+    );
+  }
+
+  /// `GET /media/sessions/:sessionId` (R).
   Future<ApiResponse<MediaSession>> get(String sessionId) {
     return withMediaErrors(
       () => _client.get<MediaSession>(
@@ -203,492 +280,668 @@ class MediaSessionsModule {
     );
   }
 
-  /// `GET /v1/media/sessions/by-join-token` — resolves a session by token.
-  Future<ApiResponse<MediaResource>> byJoinToken(String joinToken) {
+  /// `PATCH /media/sessions/:sessionId` (W, U, H) — partial update. Only the
+  /// fields you pass are sent. Emits `session_updated`.
+  Future<ApiResponse<MediaSession>> update(
+    String sessionId, {
+    String? title,
+    String? description,
+    String? topic,
+    bool? roomLocked,
+    bool? waitingRoom,
+    bool? guestAllowed,
+    bool? screenShareEnabled,
+    bool? allowSelfUnmute,
+    int? maxPublishers,
+    int? maxParticipants,
+    int? hostLeaveTimeoutSec,
+  }) {
     return withMediaErrors(
-      () => _client.get<MediaResource>(
-        '/media/sessions/by-join-token',
-        options: RequestOptions(
-          query: <String, Object?>{'join_token': joinToken},
-        ),
-        decoder: _resource,
+      () => _client.patch<MediaSession>(
+        _sessionPath(sessionId),
+        body: <String, dynamic>{
+          if (title != null) 'title': title,
+          if (description != null) 'description': description,
+          if (topic != null) 'topic': topic,
+          if (roomLocked != null) 'room_locked': roomLocked,
+          if (waitingRoom != null) 'waiting_room': waitingRoom,
+          if (guestAllowed != null) 'guest_allowed': guestAllowed,
+          if (screenShareEnabled != null)
+            'screen_share_enabled': screenShareEnabled,
+          if (allowSelfUnmute != null) 'allow_self_unmute': allowSelfUnmute,
+          if (maxPublishers != null) 'max_publishers': maxPublishers,
+          if (maxParticipants != null) 'max_participants': maxParticipants,
+          if (hostLeaveTimeoutSec != null)
+            'host_leave_timeout_sec': hostLeaveTimeoutSec,
+        },
+        decoder: _session,
       ),
     );
   }
 
-  /// `POST /v1/media/sessions/:sessionId/start` — transitions to live.
+  /// `POST /media/sessions/:sessionId/start` (W; the owner or a privileged
+  /// participant's access token when the session has an owner).
   Future<ApiResponse<MediaSession>> start(String sessionId) {
     return withMediaErrors(
       () => _client.post<MediaSession>(
-        _sessionPath(sessionId, 'start'),
+        _sessionPath(sessionId, '/start'),
         decoder: _session,
       ),
     );
   }
 
-  /// `POST /v1/media/sessions/:sessionId/end` — ends the session.
+  /// `POST /media/sessions/:sessionId/end` (W, U, H).
   Future<ApiResponse<MediaSession>> end(String sessionId) {
     return withMediaErrors(
       () => _client.post<MediaSession>(
-        _sessionPath(sessionId, 'end'),
+        _sessionPath(sessionId, '/end'),
         decoder: _session,
       ),
     );
   }
 
-  /// `DELETE /v1/media/sessions/:sessionId` — cancels a session.
-  Future<ApiResponse<void>> cancel(String sessionId) {
+  /// `DELETE /media/sessions/:sessionId` (W, U, H) — cancels the session and
+  /// returns it with status `cancelled`.
+  Future<ApiResponse<MediaSession>> cancel(String sessionId) {
     return withMediaErrors(
-      () => _client.delete<void>(_sessionPath(sessionId), decoder: (_) {}),
+      () => _client.delete<MediaSession>(
+        _sessionPath(sessionId),
+        decoder: _session,
+      ),
     );
   }
 
-  /// `GET /v1/media/sessions/:sessionId/participants`
-  Future<ApiResponse<MediaParticipantList>> participants(String sessionId) {
+  /// `POST /media/sessions/:sessionId/join` (W, U optional) — the single
+  /// admission gate.
+  ///
+  /// The returned participant token is stored in `superso.media.tokens` and
+  /// used automatically by every self-service call and by signaling. When
+  /// [participantToken] is omitted and [resume] is true, a token previously
+  /// stored for this session is sent so a guest resumes the same row.
+  /// [MediaJoinResult.admission] is `waiting` when the session has a
+  /// waiting room and the caller is not privileged.
+  Future<ApiResponse<MediaJoinResult>> join(
+    String sessionId, {
+    String? displayName,
+    String? password,
+    String? joinToken,
+    String? participantToken,
+    bool resume = true,
+    String? platform,
+    String? sdkVersion,
+    String? appVersion,
+    String? networkType,
+  }) =>
+      _join(
+        _client,
+        _tokens,
+        _sessionPath(sessionId, '/join'),
+        sessionId,
+        displayName: displayName,
+        password: password,
+        joinToken: joinToken,
+        participantToken: participantToken,
+        resume: resume,
+        platform: platform,
+        sdkVersion: sdkVersion,
+        appVersion: appVersion,
+        networkType: networkType,
+      );
+
+  /// `GET /media/sessions/:sessionId/participants` (R) — paginated; filters
+  /// `status`, `publishers_only`, `is_publisher`, `voice_role`.
+  Future<ApiResponse<MediaParticipantList>> participants(
+    String sessionId, {
+    String? status,
+    bool? publishersOnly,
+    bool? isPublisher,
+    String? voiceRole,
+    int? limit,
+    int? offset,
+  }) {
     return withMediaErrors(
       () => _client.get<MediaParticipantList>(
-        _sessionPath(sessionId, 'participants'),
-        decoder: (data) => MediaParticipantList.fromJson(
-          data as Map<String, dynamic>? ?? const <String, dynamic>{},
+        _sessionPath(sessionId, '/participants'),
+        options: RequestOptions(
+          query: _participantQuery(
+            status: status,
+            publishersOnly: publishersOnly,
+            isPublisher: isPublisher,
+            voiceRole: voiceRole,
+            limit: limit,
+            offset: offset,
+          ),
         ),
+        decoder: _participantList,
       ),
     );
   }
 
-  /// `GET /v1/media/sessions/:sessionId/timeline` — the session event log.
-  Future<ApiResponse<List<MediaResource>>> timeline(String sessionId) {
+  /// `GET /media/sessions/:sessionId/participants/:participantId` (R).
+  Future<ApiResponse<MediaParticipant>> getParticipant(
+    String sessionId,
+    String participantId,
+  ) {
     return withMediaErrors(
-      () => _client.get<List<MediaResource>>(
-        _sessionPath(sessionId, 'timeline'),
-        decoder: (data) => _resourceList(data, 'events'),
+      () => _client.get<MediaParticipant>(
+        _sessionParticipantPath(sessionId, participantId),
+        decoder: _participant,
       ),
     );
   }
 
-  /// `GET /v1/media/sessions/:sessionId/tracks` — published media tracks.
-  Future<ApiResponse<List<MediaResource>>> tracks(String sessionId) {
+  /// `POST /media/sessions/:sessionId/participants/:participantId/leave`
+  /// (W, P) — immediate leave; every signaling socket of the participant is
+  /// closed with `MEDIA_LEFT` (never reconnected).
+  Future<ApiResponse<void>> leave(
+    String sessionId,
+    String participantId, {
+    String? participantToken,
+  }) {
     return withMediaErrors(
-      () => _client.get<List<MediaResource>>(
-        _sessionPath(sessionId, 'tracks'),
-        decoder: (data) => _resourceList(data, 'tracks'),
+      () => _client.post<void>(
+        _sessionParticipantPath(sessionId, participantId, '/leave'),
+        options: _asParticipant(
+          participantToken ?? _tokens.forParticipant(participantId),
+        ),
+        decoder: _ack,
       ),
     );
   }
 
-  /// `GET /v1/media/sessions/:sessionId/speakers` — docs/media.md §19
-  /// "Active Speaker Detection": participants currently speaking or with
-  /// camera on. Documented since before this route existed on the SDK
-  /// router; was previously registered only under the Admin-JWT router
-  /// (`media_routes.go`) — closed as part of the public SDK endpoint audit,
-  /// mirroring `SDKHandler.GetActiveSpeakers`.
+  /// `PATCH /media/sessions/:sessionId/participants/:participantId/media-state`
+  /// (W, P) — reports the client's camera/microphone/screen state. Enabling
+  /// a source forbidden by server policy fails with `MEDIA_FORBIDDEN`;
+  /// enabling the microphone while muted (and allowed) self-unmutes.
+  Future<ApiResponse<MediaParticipant>> updateMediaState(
+    String sessionId,
+    String participantId, {
+    bool? cameraEnabled,
+    bool? microphoneEnabled,
+    bool? screenShareActive,
+    String? participantToken,
+  }) {
+    return withMediaErrors(
+      () => _client.patch<MediaParticipant>(
+        _sessionParticipantPath(sessionId, participantId, '/media-state'),
+        body: <String, dynamic>{
+          if (cameraEnabled != null) 'camera_enabled': cameraEnabled,
+          if (microphoneEnabled != null)
+            'microphone_enabled': microphoneEnabled,
+          if (screenShareActive != null)
+            'screen_share_active': screenShareActive,
+        },
+        options: _asParticipant(
+          participantToken ?? _tokens.forParticipant(participantId),
+        ),
+        decoder: _participant,
+      ),
+    );
+  }
+
+  /// `GET /media/sessions/:sessionId/speakers` (R) — `{speakers, count}`,
+  /// decoded as the list of currently speaking participants.
   Future<ApiResponse<List<MediaParticipant>>> speakers(String sessionId) {
     return withMediaErrors(
       () => _client.get<List<MediaParticipant>>(
-        _sessionPath(sessionId, 'speakers'),
-        decoder: (data) =>
-            ((data as Map<String, dynamic>?)?['speakers'] as List<dynamic>? ??
-                    const <dynamic>[])
-                .whereType<Map<String, dynamic>>()
-                .map(MediaParticipant.fromJson)
-                .toList(growable: false),
+        _sessionPath(sessionId, '/speakers'),
+        decoder: (data) => _jsonList(_json(data)['speakers'])
+            .map(MediaParticipant.fromJson)
+            .toList(growable: false),
+      ),
+    );
+  }
+
+  /// `GET /media/sessions/:sessionId/timeline` (R) — paginated session event
+  /// log.
+  Future<ApiResponse<MediaPage<MediaResource>>> timeline(
+    String sessionId, {
+    int? limit,
+    int? offset,
+  }) {
+    return withMediaErrors(
+      () => _client.get<MediaPage<MediaResource>>(
+        _sessionPath(sessionId, '/timeline'),
+        options: RequestOptions(query: _pageQuery(limit, offset)),
+        decoder: _resourcePage,
+      ),
+    );
+  }
+
+  /// `GET /media/sessions/:sessionId/tracks` (R) — paginated persisted
+  /// tracks.
+  Future<ApiResponse<MediaPage<MediaResource>>> tracks(
+    String sessionId, {
+    int? limit,
+    int? offset,
+  }) {
+    return withMediaErrors(
+      () => _client.get<MediaPage<MediaResource>>(
+        _sessionPath(sessionId, '/tracks'),
+        options: RequestOptions(query: _pageQuery(limit, offset)),
+        decoder: _resourcePage,
       ),
     );
   }
 }
 
-/// Participant lookup, telemetry, and removal.
+// ── Participants (project-level) ────────────────────────────────────────────
+
+/// Project-wide participant lookup and telemetry.
 ///
 /// Exposed at `superso.media.participants`.
 class MediaParticipantsModule {
-  /// Creates a participants module bound to [client].
-  const MediaParticipantsModule(this._client);
+  /// Creates a participants module.
+  MediaParticipantsModule(this._client, this._tokens);
 
   final SupersoHttpClient _client;
+  final MediaParticipantTokens _tokens;
 
-  /// `GET /v1/media/participants` — every participant in the project.
-  Future<ApiResponse<MediaParticipantList>> list({int? limit, int? offset}) {
+  /// `GET /media/participants` (R) — every participant of the project,
+  /// paginated; filters `status`, `publishers_only`, `is_publisher`,
+  /// `voice_role`.
+  Future<ApiResponse<MediaParticipantList>> list({
+    String? status,
+    bool? publishersOnly,
+    bool? isPublisher,
+    String? voiceRole,
+    int? limit,
+    int? offset,
+  }) {
     return withMediaErrors(
       () => _client.get<MediaParticipantList>(
         '/media/participants',
         options: RequestOptions(
-          query: <String, Object?>{'limit': limit, 'offset': offset},
+          query: _participantQuery(
+            status: status,
+            publishersOnly: publishersOnly,
+            isPublisher: isPublisher,
+            voiceRole: voiceRole,
+            limit: limit,
+            offset: offset,
+          ),
         ),
-        decoder: (data) => MediaParticipantList.fromJson(
-          data as Map<String, dynamic>? ?? const <String, dynamic>{},
-        ),
+        decoder: _participantList,
       ),
     );
   }
 
-  /// `GET /v1/media/participants/:participantId`
-  Future<ApiResponse<MediaParticipant>> get(String participantId) {
+  /// `GET /media/participants/:participantId` (R) — `{participant, tracks}`.
+  Future<ApiResponse<MediaParticipantDetail>> get(String participantId) {
     return withMediaErrors(
-      () => _client.get<MediaParticipant>(
+      () => _client.get<MediaParticipantDetail>(
         '/media/participants/${encodeSegment(participantId)}',
-        decoder: _participant,
+        decoder: (data) => MediaParticipantDetail.fromJson(_json(data)),
       ),
     );
   }
 
-  /// `PATCH /v1/media/participants/:participantId/telemetry` — reports
-  /// connection quality.
+  /// `PATCH /media/participants/:participantId/telemetry` (W, P) — reports
+  /// connection quality. Only the participant itself may report.
   ///
-  /// v0.3.10 fix: this previously discarded the response body entirely
-  /// (`ApiResponse<void>`, `decoder: (_) {}`), even though docs/media.md
-  /// §25 documents the server as returning "the full updated participant
-  /// object" — the same response `supersosdk`'s `telemetry.push()` already
-  /// surfaces as a `MediaParticipant`, including the just-recomputed
-  /// `connection_score`/`network_quality`. There was no way to read those
-  /// recomputed values without an extra, separate `get(participantId)`
-  /// call. Now decoded with the same [_participant] decoder `get()` uses,
-  /// so the response is a real [MediaParticipant] (any field without a
-  /// dedicated getter remains reachable via `.raw`, same as everywhere else
-  /// in this class).
-  Future<ApiResponse<MediaParticipant>> pushTelemetry(
+  /// Resolves to the updated participant, or `null` when the project has
+  /// `analytics_enabled = false` (the server answers 202 and stores
+  /// nothing).
+  Future<ApiResponse<MediaParticipant?>> pushTelemetry(
     String participantId, {
-    double? rttMs,
-    double? packetLossPct,
-    double? jitterMs,
     int? bitrateKbps,
-    Map<String, dynamic>? extra,
+    double? packetLossPct,
+    int? rttMs,
+    double? jitterMs,
+    String? networkType,
+    String? iceState,
+    String? dtlsState,
+    String? participantToken,
   }) {
     return withMediaErrors(
-      () => _client.patch<MediaParticipant>(
+      () => _client.patch<MediaParticipant?>(
         '/media/participants/${encodeSegment(participantId)}/telemetry',
         body: <String, dynamic>{
-          if (rttMs != null) 'rtt_ms': rttMs,
-          if (packetLossPct != null) 'packet_loss_pct': packetLossPct,
-          if (jitterMs != null) 'jitter_ms': jitterMs,
           if (bitrateKbps != null) 'bitrate_kbps': bitrateKbps,
-          if (extra != null) ...extra,
+          if (packetLossPct != null) 'packet_loss_pct': packetLossPct,
+          if (rttMs != null) 'rtt_ms': rttMs,
+          if (jitterMs != null) 'jitter_ms': jitterMs,
+          if (networkType != null) 'network_type': networkType,
+          if (iceState != null) 'ice_state': iceState,
+          if (dtlsState != null) 'dtls_state': dtlsState,
         },
-        decoder: _participant,
-      ),
-    );
-  }
-
-  /// `POST /v1/media/sessions/:sessionId/participants/:participantId/kick`
-  ///
-  /// Requires an end-user access token belonging to this session's host,
-  /// teacher, co-host, or moderator. Before v0.3.0 this route had no
-  /// per-caller authorization at all — any write-scoped API key could remove
-  /// anyone, including the host.
-  Future<ApiResponse<void>> kick(
-    String sessionId,
-    String participantId, {
-    String? reason,
-  }) {
-    return withMediaErrors(
-      () => _client.post<void>(
-        _participantPath(sessionId, participantId, 'kick'),
-        body: reason == null ? null : <String, dynamic>{'reason': reason},
-        decoder: (_) {},
+        options: _asParticipant(
+          participantToken ?? _tokens.forParticipant(participantId),
+        ),
+        decoder: (data) =>
+            (data is Map<String, dynamic>) ? MediaParticipant.fromJson(data) : null,
       ),
     );
   }
 }
 
-/// Participant self-service permission requests.
+// ── Self-service permissions ────────────────────────────────────────────────
+
+/// Participant self-service (stage and camera/microphone/screen requests)
+/// plus the host views of pending requests and the permission audit.
 ///
-/// Exposed at `superso.media.permissions`. These are the participant-initiated
-/// counterparts to the host-initiated calls on [MediaModerationModule], and
-/// need only the project API key.
+/// Exposed at `superso.media.permissions`. Self-service calls are `W, P`:
+/// the participant's stored token is sent as `X-Media-Participant-Token`
+/// automatically (override with `participantToken`). Every self-service call
+/// resolves to `{participant, request?}`.
 class MediaPermissionsModule {
-  /// Creates a permissions module bound to [client].
-  const MediaPermissionsModule(this._client);
+  /// Creates a permissions module.
+  MediaPermissionsModule(this._client, this._tokens);
 
   final SupersoHttpClient _client;
+  final MediaParticipantTokens _tokens;
 
-  /// Requests camera access.
-  ///
-  /// Returns the created [PermissionRequest] — fixed in v0.3.1. This method
-  /// previously declared and decoded its response as [MediaParticipant],
-  /// but `sdk_permission_handler.go`'s `RequestCamera` actually responds
-  /// with a `PermissionRequestResponse` (a request record: `id`,
-  /// `request_type`, `status`, ...), a differently-shaped object.
-  Future<ApiResponse<PermissionRequest>> requestCamera(
+  /// `POST …/participants/:participantId/request-stage` (W, P).
+  Future<ApiResponse<MediaSelfServiceResult>> requestStage(
     String sessionId,
     String participantId, {
     String? reason,
+    String? participantToken,
   }) =>
-      _requestPermission(sessionId, participantId, 'request-camera', reason);
+      _self(sessionId, participantId, 'request-stage',
+          _reasonBody(reason), participantToken);
 
-  /// Requests microphone access.
-  ///
-  /// Returns the created [PermissionRequest] — see [requestCamera]'s doc
-  /// comment for why this is not a [MediaParticipant].
-  Future<ApiResponse<PermissionRequest>> requestMicrophone(
+  /// `POST …/participants/:participantId/cancel-stage-request` (W, P).
+  Future<ApiResponse<MediaSelfServiceResult>> cancelStageRequest(
+    String sessionId,
+    String participantId, {
+    String? participantToken,
+  }) =>
+      _self(sessionId, participantId, 'cancel-stage-request', null,
+          participantToken);
+
+  /// `POST …/participants/:participantId/accept-stage-invite` (W, P).
+  Future<ApiResponse<MediaSelfServiceResult>> acceptStageInvite(
+    String sessionId,
+    String participantId, {
+    String? participantToken,
+  }) =>
+      _self(sessionId, participantId, 'accept-stage-invite', null,
+          participantToken);
+
+  /// `POST …/participants/:participantId/decline-stage-invite` (W, P).
+  Future<ApiResponse<MediaSelfServiceResult>> declineStageInvite(
+    String sessionId,
+    String participantId, {
+    String? participantToken,
+  }) =>
+      _self(sessionId, participantId, 'decline-stage-invite', null,
+          participantToken);
+
+  /// `POST …/participants/:participantId/request-camera` (W, P).
+  Future<ApiResponse<MediaSelfServiceResult>> requestCamera(
     String sessionId,
     String participantId, {
     String? reason,
+    String? participantToken,
   }) =>
-      _requestPermission(
-          sessionId, participantId, 'request-microphone', reason);
+      _self(sessionId, participantId, 'request-camera', _reasonBody(reason),
+          participantToken);
 
-  /// Requests screen-share access.
-  ///
-  /// Returns the created [PermissionRequest] — see [requestCamera]'s doc
-  /// comment for why this is not a [MediaParticipant].
-  Future<ApiResponse<PermissionRequest>> requestScreen(
+  /// `POST …/participants/:participantId/request-microphone` (W, P).
+  Future<ApiResponse<MediaSelfServiceResult>> requestMicrophone(
     String sessionId,
     String participantId, {
     String? reason,
+    String? participantToken,
   }) =>
-      _requestPermission(sessionId, participantId, 'request-screen', reason);
+      _self(sessionId, participantId, 'request-microphone',
+          _reasonBody(reason), participantToken);
 
-  /// Requests to join the stage.
-  Future<ApiResponse<MediaParticipant>> requestStage(
+  /// `POST …/participants/:participantId/request-screen` (W, P).
+  Future<ApiResponse<MediaSelfServiceResult>> requestScreen(
     String sessionId,
     String participantId, {
     String? reason,
+    String? participantToken,
   }) =>
-      _request(sessionId, participantId, 'request-stage', reason);
+      _self(sessionId, participantId, 'request-screen', _reasonBody(reason),
+          participantToken);
 
-  /// Cancels a pending stage request.
-  Future<ApiResponse<MediaParticipant>> cancelStageRequest(
+  /// `POST …/participants/:participantId/cancel-request` (W, P) — body
+  /// `{request_type}` (`camera|microphone|screen|stage`). `speaking` only
+  /// appears on legacy rows and is rejected with an [ArgumentError].
+  Future<ApiResponse<MediaSelfServiceResult>> cancelRequest(
     String sessionId,
     String participantId,
-  ) =>
-      _request(sessionId, participantId, 'cancel-stage-request', null);
+    MediaRequestType requestType, {
+    String? participantToken,
+  }) {
+    if (requestType == MediaRequestType.speaking) {
+      throw ArgumentError.value(requestType, 'requestType',
+          'must be camera, microphone, screen or stage');
+    }
+    return _self(
+      sessionId,
+      participantId,
+      'cancel-request',
+      <String, dynamic>{'request_type': requestType.wireValue},
+      participantToken,
+    );
+  }
 
-  /// Cancels any pending permission request.
-  Future<ApiResponse<MediaParticipant>> cancelRequest(
+  /// `POST …/participants/:participantId/stop-screen-share` (W, P).
+  Future<ApiResponse<MediaSelfServiceResult>> stopScreenShare(
     String sessionId,
-    String participantId,
-  ) =>
-      _request(sessionId, participantId, 'cancel-request', null);
+    String participantId, {
+    String? participantToken,
+  }) =>
+      _self(sessionId, participantId, 'stop-screen-share', null,
+          participantToken);
 
-  /// Raises the caller's hand.
-  Future<ApiResponse<MediaParticipant>> raiseHand(
-    String sessionId,
-    String participantId,
-  ) =>
-      _request(sessionId, participantId, 'raise-hand', null);
-
-  /// Lowers the caller's hand.
-  Future<ApiResponse<MediaParticipant>> lowerHand(
-    String sessionId,
-    String participantId,
-  ) =>
-      _request(sessionId, participantId, 'lower-hand', null);
-
-  /// Accepts a host's stage invitation.
-  Future<ApiResponse<MediaParticipant>> acceptStageInvite(
-    String sessionId,
-    String participantId,
-  ) =>
-      _request(sessionId, participantId, 'accept-stage-invite', null);
-
-  /// Declines a host's stage invitation.
-  Future<ApiResponse<MediaParticipant>> declineStageInvite(
-    String sessionId,
-    String participantId,
-  ) =>
-      _request(sessionId, participantId, 'decline-stage-invite', null);
-
-  /// Signals intent to share a screen. A host must still approve.
-  Future<ApiResponse<MediaParticipant>> requestScreenShare(
-    String sessionId,
-    String participantId,
-  ) =>
-      _request(sessionId, participantId, 'request-screen-share', null);
-
-  /// Stops an active screen share.
-  Future<ApiResponse<MediaParticipant>> stopScreenShare(
-    String sessionId,
-    String participantId,
-  ) =>
-      _request(sessionId, participantId, 'stop-screen-share', null);
-
-  Future<ApiResponse<MediaParticipant>> _request(
-    String sessionId,
-    String participantId,
-    String action,
-    String? reason,
-  ) {
+  /// `GET /media/sessions/:sessionId/permission-requests` (R, U, H) —
+  /// `{requests, total}`, decoded as the list of pending requests.
+  Future<ApiResponse<List<PermissionRequest>>> listRequests(String sessionId) {
     return withMediaErrors(
-      () => _client.post<MediaParticipant>(
-        _participantPath(sessionId, participantId, action),
-        body: reason == null ? null : <String, dynamic>{'reason': reason},
-        decoder: _participant,
+      () => _client.get<List<PermissionRequest>>(
+        _sessionPath(sessionId, '/permission-requests'),
+        decoder: (data) => _jsonList(_json(data)['requests'])
+            .map(PermissionRequest.fromJson)
+            .toList(growable: false),
       ),
     );
   }
 
-  /// Like [_request], but for the three actions that respond with a
-  /// [PermissionRequest] instead of a [MediaParticipant]. See
-  /// [requestCamera]'s doc comment for why these differ.
-  Future<ApiResponse<PermissionRequest>> _requestPermission(
+  /// `GET /media/sessions/:sessionId/permission-audit` (R, U, H) —
+  /// paginated before/after permission snapshots.
+  Future<ApiResponse<MediaPage<MediaResource>>> audit(
+    String sessionId, {
+    int? limit,
+    int? offset,
+  }) {
+    return withMediaErrors(
+      () => _client.get<MediaPage<MediaResource>>(
+        _sessionPath(sessionId, '/permission-audit'),
+        options: RequestOptions(query: _pageQuery(limit, offset)),
+        decoder: _resourcePage,
+      ),
+    );
+  }
+
+  Future<ApiResponse<MediaSelfServiceResult>> _self(
     String sessionId,
     String participantId,
     String action,
-    String? reason,
+    Map<String, dynamic>? body,
+    String? participantToken,
   ) {
     return withMediaErrors(
-      () => _client.post<PermissionRequest>(
-        _participantPath(sessionId, participantId, action),
-        body: reason == null ? null : <String, dynamic>{'reason': reason},
-        decoder: _permissionRequest,
+      () => _client.post<MediaSelfServiceResult>(
+        _sessionParticipantPath(sessionId, participantId, '/$action'),
+        body: body,
+        options: _asParticipant(
+          participantToken ?? _tokens.forParticipant(participantId),
+        ),
+        decoder: _selfResult,
       ),
     );
   }
 }
 
-/// Host moderation.
+// ── Host moderation ─────────────────────────────────────────────────────────
+
+/// Host moderation (`W, U, H`).
 ///
-/// Exposed at `superso.media.moderation`.
-///
-/// **Every method here requires an end-user access token** belonging to this
-/// session's host, teacher, assistant teacher, co-host, or moderator — an API
-/// key alone is not enough, and being merely authenticated is not enough
-/// either. Call `auth.login()` first; the shared client attaches the token
-/// automatically. A caller without standing gets a [HostAuthorizationError].
-///
-/// A session's creator becomes its host automatically the first time they
-/// join, provided they were signed in when the session was created.
+/// Exposed at `superso.media.moderation`. **Every method requires an
+/// end-user access token** whose user is a privileged participant (owner,
+/// teacher, co-host, assistant teacher or moderator) of the session, and the
+/// caller must strictly outrank the target. Failures surface as
+/// [HostAuthorizationError] (`MEDIA_NOT_HOST` / `MEDIA_INSUFFICIENT_RANK`);
+/// `MEDIA_MODERATION_DISABLED` when the project disabled SDK moderation.
+/// Every action resolves to the updated participant.
 class MediaModerationModule {
-  /// Creates a moderation module bound to [client].
+  /// Creates a moderation module.
   const MediaModerationModule(this._client);
 
   final SupersoHttpClient _client;
 
-  /// Grants camera publish permission.
+  /// `approve-camera`.
   Future<ApiResponse<MediaParticipant>> approveCamera(
           String sessionId, String participantId, {String? reason}) =>
       _act(sessionId, participantId, 'approve-camera', reason);
 
-  /// Denies a pending camera request.
+  /// `reject-camera`.
   Future<ApiResponse<MediaParticipant>> rejectCamera(
           String sessionId, String participantId, {String? reason}) =>
       _act(sessionId, participantId, 'reject-camera', reason);
 
-  /// Revokes camera publish permission.
+  /// `revoke-camera`.
   Future<ApiResponse<MediaParticipant>> revokeCamera(
           String sessionId, String participantId, {String? reason}) =>
       _act(sessionId, participantId, 'revoke-camera', reason);
 
-  /// Grants microphone publish permission.
+  /// `approve-microphone`.
   Future<ApiResponse<MediaParticipant>> approveMicrophone(
           String sessionId, String participantId, {String? reason}) =>
       _act(sessionId, participantId, 'approve-microphone', reason);
 
-  /// Denies a pending microphone request.
+  /// `reject-microphone`.
   Future<ApiResponse<MediaParticipant>> rejectMicrophone(
           String sessionId, String participantId, {String? reason}) =>
       _act(sessionId, participantId, 'reject-microphone', reason);
 
-  /// Revokes microphone publish permission.
+  /// `revoke-microphone`.
   Future<ApiResponse<MediaParticipant>> revokeMicrophone(
           String sessionId, String participantId, {String? reason}) =>
       _act(sessionId, participantId, 'revoke-microphone', reason);
 
-  /// Grants screen-share permission.
+  /// `approve-screen`.
   Future<ApiResponse<MediaParticipant>> approveScreen(
           String sessionId, String participantId, {String? reason}) =>
       _act(sessionId, participantId, 'approve-screen', reason);
 
-  /// Denies a pending screen-share request.
+  /// `reject-screen`.
   Future<ApiResponse<MediaParticipant>> rejectScreen(
           String sessionId, String participantId, {String? reason}) =>
       _act(sessionId, participantId, 'reject-screen', reason);
 
-  /// Revokes screen-share permission.
+  /// `revoke-screen`.
   Future<ApiResponse<MediaParticipant>> revokeScreen(
           String sessionId, String participantId, {String? reason}) =>
       _act(sessionId, participantId, 'revoke-screen', reason);
 
-  /// Mutes a participant's microphone.
+  /// `mute`.
   Future<ApiResponse<MediaParticipant>> mute(
           String sessionId, String participantId, {String? reason}) =>
       _act(sessionId, participantId, 'mute', reason);
 
-  /// Unmutes a participant.
+  /// `unmute` (fails with `MEDIA_INVALID_STATE` while force-muted).
   Future<ApiResponse<MediaParticipant>> unmute(
-          String sessionId, String participantId) =>
-      _act(sessionId, participantId, 'unmute', null);
+          String sessionId, String participantId, {String? reason}) =>
+      _act(sessionId, participantId, 'unmute', reason);
 
-  /// Force-mutes a participant. They cannot self-unmute until
+  /// `force-mute` — the participant cannot self-unmute until
   /// [clearForceMute].
   Future<ApiResponse<MediaParticipant>> forceMute(
-          String sessionId, String participantId) =>
-      _act(sessionId, participantId, 'force-mute', null);
+          String sessionId, String participantId, {String? reason}) =>
+      _act(sessionId, participantId, 'force-mute', reason);
 
-  /// Lifts a force-mute.
+  /// `clear-force-mute`.
   Future<ApiResponse<MediaParticipant>> clearForceMute(
-          String sessionId, String participantId) =>
-      _act(sessionId, participantId, 'clear-force-mute', null);
+          String sessionId, String participantId, {String? reason}) =>
+      _act(sessionId, participantId, 'clear-force-mute', reason);
 
-  /// Hides a participant's video tile for everyone else.
+  /// `hide-video`.
   Future<ApiResponse<MediaParticipant>> hideVideo(
-          String sessionId, String participantId) =>
-      _act(sessionId, participantId, 'hide-video', null);
+          String sessionId, String participantId, {String? reason}) =>
+      _act(sessionId, participantId, 'hide-video', reason);
 
-  /// Restores a participant's video tile.
+  /// `show-video`.
   Future<ApiResponse<MediaParticipant>> showVideo(
-          String sessionId, String participantId) =>
-      _act(sessionId, participantId, 'show-video', null);
+          String sessionId, String participantId, {String? reason}) =>
+      _act(sessionId, participantId, 'show-video', reason);
 
-  /// Pins a participant in every viewer's layout.
+  /// `pin`.
   Future<ApiResponse<MediaParticipant>> pin(
-          String sessionId, String participantId) =>
-      _act(sessionId, participantId, 'pin', null);
+          String sessionId, String participantId, {String? reason}) =>
+      _act(sessionId, participantId, 'pin', reason);
 
-  /// Removes a participant's pin.
+  /// `unpin`.
   Future<ApiResponse<MediaParticipant>> unpin(
-          String sessionId, String participantId) =>
-      _act(sessionId, participantId, 'unpin', null);
+          String sessionId, String participantId, {String? reason}) =>
+      _act(sessionId, participantId, 'unpin', reason);
 
-  /// Spotlights a participant.
+  /// `spotlight`.
   Future<ApiResponse<MediaParticipant>> spotlight(
-          String sessionId, String participantId) =>
-      _act(sessionId, participantId, 'spotlight', null);
+          String sessionId, String participantId, {String? reason}) =>
+      _act(sessionId, participantId, 'spotlight', reason);
 
-  /// Removes a participant's spotlight.
+  /// `unspotlight`.
   Future<ApiResponse<MediaParticipant>> unspotlight(
-          String sessionId, String participantId) =>
-      _act(sessionId, participantId, 'unspotlight', null);
+          String sessionId, String participantId, {String? reason}) =>
+      _act(sessionId, participantId, 'unspotlight', reason);
 
-  /// Approves a pending stage request.
+  /// `approve-stage` — approves a pending stage request.
   Future<ApiResponse<MediaParticipant>> approveStageRequest(
           String sessionId, String participantId, {String? reason}) =>
       _act(sessionId, participantId, 'approve-stage', reason);
 
-  /// Rejects a pending stage request.
+  /// `reject-stage` — rejects a pending stage request.
   Future<ApiResponse<MediaParticipant>> rejectStageRequest(
           String sessionId, String participantId, {String? reason}) =>
       _act(sessionId, participantId, 'reject-stage', reason);
 
-  /// Invites a participant onto the stage.
+  /// `invite-to-stage`.
   Future<ApiResponse<MediaParticipant>> inviteToStage(
-          String sessionId, String participantId) =>
-      _act(sessionId, participantId, 'invite-to-stage', null);
+          String sessionId, String participantId, {String? reason}) =>
+      _act(sessionId, participantId, 'invite-to-stage', reason);
 
-  /// Removes a participant from the stage.
+  /// `remove-from-stage`.
   Future<ApiResponse<MediaParticipant>> removeFromStage(
           String sessionId, String participantId, {String? reason}) =>
       _act(sessionId, participantId, 'remove-from-stage', reason);
 
-  /// Promotes a participant to publisher.
+  /// `promote` — to publisher.
   Future<ApiResponse<MediaParticipant>> promote(
-          String sessionId, String participantId) =>
-      _act(sessionId, participantId, 'promote', null);
+          String sessionId, String participantId, {String? reason}) =>
+      _act(sessionId, participantId, 'promote', reason);
 
-  /// Demotes a participant to viewer.
+  /// `demote` — to viewer (publisher sockets close with
+  /// `MEDIA_PUBLISH_REVOKED`).
   Future<ApiResponse<MediaParticipant>> demote(
           String sessionId, String participantId, {String? reason}) =>
       _act(sessionId, participantId, 'demote', reason);
 
-  /// Assigns a classroom role.
-  ///
-  /// This is how a bootstrapped host builds a teaching team without touching
-  /// the Admin Dashboard. Only [ClassroomRole.assignable] roles may be
-  /// granted; owner is bootstrap-only and the guest roles come from the join
-  /// flow, so passing either throws a [ValidationError] before any request.
-  Future<ApiResponse<void>> assignRole(
+  /// `kick` — every socket closes with `MEDIA_KICKED`.
+  Future<ApiResponse<MediaParticipant>> kick(
+          String sessionId, String participantId, {String? reason}) =>
+      _act(sessionId, participantId, 'kick', reason);
+
+  /// `ban` — sticky: the same user can never rejoin (`MEDIA_BANNED`).
+  Future<ApiResponse<MediaParticipant>> ban(
+          String sessionId, String participantId, {String? reason}) =>
+      _act(sessionId, participantId, 'ban', reason);
+
+  /// `assign-role` — body `{role}`. Only [ClassroomRole.assignable] roles are
+  /// sent; anything else throws a [ValidationError] before any request. The
+  /// server additionally requires the role to rank strictly below the
+  /// caller's own (`MEDIA_INSUFFICIENT_RANK`).
+  Future<ApiResponse<MediaParticipant>> assignRole(
     String sessionId,
     String participantId,
-    ClassroomRole role,
-  ) {
+    ClassroomRole role, {
+    String? reason,
+  }) {
     if (!ClassroomRole.assignable.contains(role)) {
       throw ValidationError(
         'Superso: `${role.wireValue}` cannot be assigned. Assignable roles '
@@ -696,10 +949,13 @@ class MediaModerationModule {
       );
     }
     return withMediaErrors(
-      () => _client.post<void>(
-        _participantPath(sessionId, participantId, 'assign-role'),
-        body: <String, dynamic>{'role': role.wireValue},
-        decoder: (_) {},
+      () => _client.post<MediaParticipant>(
+        _sessionParticipantPath(sessionId, participantId, '/assign-role'),
+        body: <String, dynamic>{
+          'role': role.wireValue,
+          if (reason != null) 'reason': reason,
+        },
+        decoder: _participant,
       ),
     );
   }
@@ -712,485 +968,1023 @@ class MediaModerationModule {
   ) {
     return withMediaErrors(
       () => _client.post<MediaParticipant>(
-        _participantPath(sessionId, participantId, action),
-        body: reason == null ? null : <String, dynamic>{'reason': reason},
+        _sessionParticipantPath(sessionId, participantId, '/$action'),
+        body: _reasonBody(reason),
         decoder: _participant,
       ),
     );
   }
 }
 
-/// A publisher opens the signaling connection with `role: publisher` and
-/// negotiates a WebRTC peer connection over it (docs/media.md §12
-/// "Publisher Flow").
+// ── Voice rooms ─────────────────────────────────────────────────────────────
+
+/// Voice rooms (audio sessions with `voice_room = true`).
 ///
-/// Exposed at `superso.media.publishers`.
-///
-/// This module owns the documented signaling transport
-/// ([MediaSignalingConnection]) and the documented REST self-service actions
-/// ([MediaModerationModule]/[MediaPermissionsModule]); it does not bundle a
-/// WebRTC media-capture engine (no `RTCPeerConnection`, no camera/microphone
-/// capture) — the host application supplies its own WebRTC plugin and wires
-/// its offer/ICE-candidate calls through the connection [join] returns.
-class MediaPublishersModule {
-  /// Creates a publishers module bound to [client].
-  MediaPublishersModule(this._client);
+/// Exposed at `superso.media.voiceRooms`. A voice room id is a session id:
+/// every session-scoped call (moderation, waiting room, speaker queue, ...)
+/// accepts it too.
+class MediaVoiceRoomsModule {
+  /// Creates a voice-rooms module.
+  MediaVoiceRoomsModule(this._client, this._tokens);
 
   final SupersoHttpClient _client;
+  final MediaParticipantTokens _tokens;
 
-  /// The signaling connection this module opens and reuses across [join]/
-  /// [leave] calls.
-  late final MediaSignalingConnection connection =
-      MediaSignalingConnection(_client);
-
-  /// Opens the signaling connection for [sessionId] with `role: publisher`.
-  /// Returns the same [MediaSignalingConnection] as [connection].
-  Future<MediaSignalingConnection> join(String sessionId) async {
-    await connection.connect(sessionId, SignalingRole.publisher);
-    return connection;
-  }
-
-  /// Closes the signaling connection.
-  Future<void> leave() => connection.disconnect();
-}
-
-/// A subscriber opens the signaling connection with `role: subscriber` to
-/// receive tracks from every publisher in the session (docs/media.md §13
-/// "Subscriber Flow").
-///
-/// Exposed at `superso.media.subscribers`.
-///
-/// As with [MediaPublishersModule], this module owns the documented
-/// signaling transport only — decoding received tracks into a renderable
-/// view is left to the host application's own WebRTC plugin, which
-/// subscribes to [MediaSignalingConnection.onOffer] /
-/// [MediaSignalingConnection.onIceCandidate] on the returned connection.
-class MediaSubscribersModule {
-  /// Creates a subscribers module bound to [client].
-  MediaSubscribersModule(this._client);
-
-  final SupersoHttpClient _client;
-
-  /// The signaling connection this module opens and reuses across [join]/
-  /// [leave] calls.
-  late final MediaSignalingConnection connection =
-      MediaSignalingConnection(_client);
-
-  /// Opens the signaling connection for [sessionId] with `role: subscriber`.
-  /// Returns the same [MediaSignalingConnection] as [connection].
-  Future<MediaSignalingConnection> join(String sessionId) async {
-    await connection.connect(sessionId, SignalingRole.subscriber);
-    return connection;
-  }
-
-  /// Closes the signaling connection.
-  Future<void> leave() => connection.disconnect();
-}
-
-/// The classroom engine: attendance, speaker queue.
-///
-/// This class originally also carried Reactions, Polls, and Classroom Hand
-/// Raise (`sendReaction`/`reactionSummary`/`createPoll`/`listPolls`/`vote`/
-/// `pollResults`/`raiseHand`/`lowerHand`). Those six features (Classroom,
-/// Polls, Whiteboard, Reactions, Chat, Webhooks) were removed from Media
-/// Core — see docs/media.md. Attendance and Speaker Queue are separate,
-/// still-supported features that happened to share this class name; it is
-/// kept as-is (not renamed) to avoid an unrelated, unrequested
-/// rename/refactor.
-///
-/// Exposed at `superso.media.classroom`.
-class MediaClassroomModule {
-  /// Creates a classroom module bound to [client].
-  const MediaClassroomModule(this._client);
-
-  final SupersoHttpClient _client;
-
-  /// `GET /sessions/:sessionId/attendance` — per-participant summary.
-  Future<ApiResponse<List<MediaResource>>> attendanceSummary(
-    String sessionId,
-  ) {
-    return withMediaErrors(
-      () => _client.get<List<MediaResource>>(
-        _sessionPath(sessionId, 'attendance'),
-        decoder: (data) => _resourceList(data, 'summary'),
-      ),
-    );
-  }
-
-  /// `GET /sessions/:sessionId/speaker-queue` — the queue, in priority order.
-  Future<ApiResponse<List<MediaResource>>> listSpeakerQueue(
-    String sessionId,
-  ) {
-    return withMediaErrors(
-      () => _client.get<List<MediaResource>>(
-        _sessionPath(sessionId, 'speaker-queue'),
-        decoder: (data) => _resourceList(data, 'queue'),
-      ),
-    );
-  }
-
-  /// `POST /sessions/:sessionId/speaker-queue` — joins the queue.
-  Future<ApiResponse<MediaResource>> joinSpeakerQueue(
-    String sessionId, {
-    required String participantId,
-    String? reason,
+  /// `GET /media/voice-rooms` (R) — paginated; filter `status`.
+  Future<ApiResponse<MediaSessionList>> list({
+    String? status,
+    int? limit,
+    int? offset,
   }) {
     return withMediaErrors(
+      () => _client.get<MediaSessionList>(
+        '/media/voice-rooms',
+        options: RequestOptions(
+          query: <String, Object?>{
+            'status': status,
+            'limit': limit,
+            'offset': offset,
+          },
+        ),
+        decoder: (data) => MediaSessionList.fromJson(_json(data)),
+      ),
+    );
+  }
+
+  /// `POST /media/voice-rooms` (W, U optional).
+  Future<ApiResponse<MediaSession>> create({
+    required String title,
+    String? description,
+    String? visibility,
+    String? password,
+    String? roomType,
+    bool? allowListenersToSpeak,
+    bool? requireHandRaise,
+    int? maxParticipants,
+    bool? waitingRoom,
+    bool? guestAllowed,
+    String? topic,
+    String? scheduledAt,
+    String? expiresAt,
+    String? hostUserId,
+  }) {
+    if (title.trim().isEmpty) {
+      throw const ValidationError('Superso: a voice room title is required.');
+    }
+    return withMediaErrors(
+      () => _client.post<MediaSession>(
+        '/media/voice-rooms',
+        body: <String, dynamic>{
+          'title': title,
+          if (description != null) 'description': description,
+          if (visibility != null) 'visibility': visibility,
+          if (password != null) 'password': password,
+          if (roomType != null) 'room_type': roomType,
+          if (allowListenersToSpeak != null)
+            'allow_listeners_to_speak': allowListenersToSpeak,
+          if (requireHandRaise != null) 'require_hand_raise': requireHandRaise,
+          if (maxParticipants != null) 'max_participants': maxParticipants,
+          if (waitingRoom != null) 'waiting_room': waitingRoom,
+          if (guestAllowed != null) 'guest_allowed': guestAllowed,
+          if (topic != null) 'topic': topic,
+          if (scheduledAt != null) 'scheduled_at': scheduledAt,
+          if (expiresAt != null) 'expires_at': expiresAt,
+          if (hostUserId != null) 'host_user_id': hostUserId,
+        },
+        decoder: _session,
+      ),
+    );
+  }
+
+  /// `GET /media/voice-rooms/:roomId` (R).
+  Future<ApiResponse<MediaSession>> get(String roomId) {
+    return withMediaErrors(
+      () => _client.get<MediaSession>(_voicePath(roomId), decoder: _session),
+    );
+  }
+
+  /// `PATCH /media/voice-rooms/:roomId` (W, U, H) — partial update. Emits
+  /// `voice_room.updated`.
+  Future<ApiResponse<MediaSession>> update(
+    String roomId, {
+    String? title,
+    String? description,
+    String? topic,
+    String? roomType,
+    bool? allowListenersToSpeak,
+    bool? requireHandRaise,
+    bool? roomLocked,
+  }) {
+    return withMediaErrors(
+      () => _client.patch<MediaSession>(
+        _voicePath(roomId),
+        body: <String, dynamic>{
+          if (title != null) 'title': title,
+          if (description != null) 'description': description,
+          if (topic != null) 'topic': topic,
+          if (roomType != null) 'room_type': roomType,
+          if (allowListenersToSpeak != null)
+            'allow_listeners_to_speak': allowListenersToSpeak,
+          if (requireHandRaise != null) 'require_hand_raise': requireHandRaise,
+          if (roomLocked != null) 'room_locked': roomLocked,
+        },
+        decoder: _session,
+      ),
+    );
+  }
+
+  /// `POST /media/voice-rooms/:roomId/start` (W, as session start).
+  Future<ApiResponse<MediaSession>> start(String roomId) {
+    return withMediaErrors(
+      () => _client.post<MediaSession>(
+        _voicePath(roomId, '/start'),
+        decoder: _session,
+      ),
+    );
+  }
+
+  /// `POST /media/voice-rooms/:roomId/end` (W, U, H).
+  Future<ApiResponse<MediaSession>> end(String roomId) {
+    return withMediaErrors(
+      () => _client.post<MediaSession>(
+        _voicePath(roomId, '/end'),
+        decoder: _session,
+      ),
+    );
+  }
+
+  /// `POST /media/voice-rooms/:roomId/transfer-host` (W, U, H owner) — body
+  /// `{participant_id}`; resolves to the new host.
+  Future<ApiResponse<MediaParticipant>> transferHost(
+    String roomId,
+    String participantId,
+  ) {
+    return withMediaErrors(
+      () => _client.post<MediaParticipant>(
+        _voicePath(roomId, '/transfer-host'),
+        body: <String, dynamic>{'participant_id': participantId},
+        decoder: _participant,
+      ),
+    );
+  }
+
+  /// `POST /media/voice-rooms/:roomId/join` (W, U optional) — same admission
+  /// gate as `sessions.join`; the participant token is stored.
+  Future<ApiResponse<MediaJoinResult>> join(
+    String roomId, {
+    String? displayName,
+    String? password,
+    String? joinToken,
+    String? participantToken,
+    bool resume = true,
+    String? platform,
+    String? sdkVersion,
+    String? appVersion,
+    String? networkType,
+  }) =>
+      _join(
+        _client,
+        _tokens,
+        _voicePath(roomId, '/join'),
+        roomId,
+        displayName: displayName,
+        password: password,
+        joinToken: joinToken,
+        participantToken: participantToken,
+        resume: resume,
+        platform: platform,
+        sdkVersion: sdkVersion,
+        appVersion: appVersion,
+        networkType: networkType,
+      );
+
+  /// `GET /media/voice-rooms/:roomId/participants` (R) — paginated; filters
+  /// `status`, `publishers_only`, `is_publisher`, `voice_role`.
+  Future<ApiResponse<MediaParticipantList>> participants(
+    String roomId, {
+    String? status,
+    bool? publishersOnly,
+    bool? isPublisher,
+    String? voiceRole,
+    int? limit,
+    int? offset,
+  }) {
+    return withMediaErrors(
+      () => _client.get<MediaParticipantList>(
+        _voicePath(roomId, '/participants'),
+        options: RequestOptions(
+          query: _participantQuery(
+            status: status,
+            publishersOnly: publishersOnly,
+            isPublisher: isPublisher,
+            voiceRole: voiceRole,
+            limit: limit,
+            offset: offset,
+          ),
+        ),
+        decoder: _participantList,
+      ),
+    );
+  }
+
+  /// `POST …/participants/:participantId/raise-hand` (W, P).
+  Future<ApiResponse<MediaParticipant>> raiseHand(
+    String roomId,
+    String participantId, {
+    String? participantToken,
+  }) =>
+      _self(roomId, participantId, 'raise-hand', participantToken);
+
+  /// `POST …/participants/:participantId/lower-hand` (W, P).
+  Future<ApiResponse<MediaParticipant>> lowerHand(
+    String roomId,
+    String participantId, {
+    String? participantToken,
+  }) =>
+      _self(roomId, participantId, 'lower-hand', participantToken);
+
+  /// `promote` (W, U, H) — listener → speaker.
+  Future<ApiResponse<MediaParticipant>> promote(
+          String roomId, String participantId) =>
+      _host(roomId, participantId, 'promote');
+
+  /// `demote` (W, U, H) — speaker → listener.
+  Future<ApiResponse<MediaParticipant>> demote(
+          String roomId, String participantId) =>
+      _host(roomId, participantId, 'demote');
+
+  /// `mute` (W, U, H).
+  Future<ApiResponse<MediaParticipant>> mute(
+          String roomId, String participantId) =>
+      _host(roomId, participantId, 'mute');
+
+  /// `unmute` (W, U, H).
+  Future<ApiResponse<MediaParticipant>> unmute(
+          String roomId, String participantId) =>
+      _host(roomId, participantId, 'unmute');
+
+  /// `accept-hand` (W, U, H).
+  Future<ApiResponse<MediaParticipant>> acceptHand(
+          String roomId, String participantId) =>
+      _host(roomId, participantId, 'accept-hand');
+
+  /// `reject-hand` (W, U, H).
+  Future<ApiResponse<MediaParticipant>> rejectHand(
+          String roomId, String participantId) =>
+      _host(roomId, participantId, 'reject-hand');
+
+  /// `add-moderator` (W, U, H).
+  Future<ApiResponse<MediaParticipant>> addModerator(
+          String roomId, String participantId) =>
+      _host(roomId, participantId, 'add-moderator');
+
+  /// `remove-moderator` (W, U, H).
+  Future<ApiResponse<MediaParticipant>> removeModerator(
+          String roomId, String participantId) =>
+      _host(roomId, participantId, 'remove-moderator');
+
+  Future<ApiResponse<MediaParticipant>> _self(
+    String roomId,
+    String participantId,
+    String action,
+    String? participantToken,
+  ) {
+    return withMediaErrors(
+      () => _client.post<MediaParticipant>(
+        _voicePath(roomId, '/participants/${encodeSegment(participantId)}/$action'),
+        options: _asParticipant(
+          participantToken ?? _tokens.forParticipant(participantId),
+        ),
+        decoder: _participant,
+      ),
+    );
+  }
+
+  Future<ApiResponse<MediaParticipant>> _host(
+    String roomId,
+    String participantId,
+    String action,
+  ) {
+    return withMediaErrors(
+      () => _client.post<MediaParticipant>(
+        _voicePath(roomId, '/participants/${encodeSegment(participantId)}/$action'),
+        decoder: _participant,
+      ),
+    );
+  }
+}
+
+// ── Breakout rooms ──────────────────────────────────────────────────────────
+
+/// Breakout rooms.
+///
+/// Exposed at `superso.media.breakoutRooms`. A moved participant's sockets
+/// close with `MEDIA_BREAKOUT_MOVED` (reason = room id) and the SDK's
+/// signaling connection reconnects into the room automatically; closing a
+/// room sends `MEDIA_BREAKOUT_CLOSED` and reconnects to the main room.
+class MediaBreakoutRoomsModule {
+  /// Creates a breakout-rooms module.
+  const MediaBreakoutRoomsModule(this._client);
+
+  final SupersoHttpClient _client;
+
+  /// `GET /media/sessions/:sessionId/breakout-rooms` (R) — `{rooms, total}`,
+  /// decoded as the list of rooms (each with `participant_ids`).
+  Future<ApiResponse<List<MediaBreakoutRoom>>> list(String sessionId) {
+    return withMediaErrors(
+      () => _client.get<List<MediaBreakoutRoom>>(
+        _sessionPath(sessionId, '/breakout-rooms'),
+        decoder: (data) => _jsonList(_json(data)['rooms'])
+            .map(MediaBreakoutRoom.fromJson)
+            .toList(growable: false),
+      ),
+    );
+  }
+
+  /// `GET /media/sessions/:sessionId/breakout-rooms/:roomId` (R).
+  Future<ApiResponse<MediaBreakoutRoom>> get(String sessionId, String roomId) {
+    return withMediaErrors(
+      () => _client.get<MediaBreakoutRoom>(
+        _sessionPath(sessionId, '/breakout-rooms/${encodeSegment(roomId)}'),
+        decoder: _breakoutRoom,
+      ),
+    );
+  }
+
+  /// `POST /media/sessions/:sessionId/breakout-rooms` (W, U, H) — `{title}`.
+  Future<ApiResponse<MediaBreakoutRoom>> create(
+    String sessionId, {
+    required String title,
+  }) {
+    return withMediaErrors(
+      () => _client.post<MediaBreakoutRoom>(
+        _sessionPath(sessionId, '/breakout-rooms'),
+        body: <String, dynamic>{'title': title},
+        decoder: _breakoutRoom,
+      ),
+    );
+  }
+
+  /// `PATCH /media/sessions/:sessionId/breakout-rooms/:roomId` (W, U, H) —
+  /// renames the room.
+  Future<ApiResponse<MediaBreakoutRoom>> update(
+    String sessionId,
+    String roomId, {
+    required String title,
+  }) {
+    return withMediaErrors(
+      () => _client.patch<MediaBreakoutRoom>(
+        _sessionPath(sessionId, '/breakout-rooms/${encodeSegment(roomId)}'),
+        body: <String, dynamic>{'title': title},
+        decoder: _breakoutRoom,
+      ),
+    );
+  }
+
+  /// `POST /media/sessions/:sessionId/breakout-rooms/:roomId/close`
+  /// (W, U, H) — members return to the main session.
+  Future<ApiResponse<void>> close(String sessionId, String roomId) {
+    return withMediaErrors(
+      () => _client.post<void>(
+        _sessionPath(
+          sessionId,
+          '/breakout-rooms/${encodeSegment(roomId)}/close',
+        ),
+        decoder: _ack,
+      ),
+    );
+  }
+
+  /// `POST /media/sessions/:sessionId/breakout-rooms/close-all` (W, U, H) —
+  /// resolves to the number of rooms closed (`{closed}`).
+  Future<ApiResponse<int>> closeAll(String sessionId) {
+    return withMediaErrors(
+      () => _client.post<int>(
+        _sessionPath(sessionId, '/breakout-rooms/close-all'),
+        decoder: (data) => (_json(data)['closed'] as num?)?.toInt() ?? 0,
+      ),
+    );
+  }
+
+  /// `DELETE /media/sessions/:sessionId/breakout-rooms/:roomId` (W, U, H).
+  Future<ApiResponse<void>> delete(String sessionId, String roomId) {
+    return withMediaErrors(
+      () => _client.delete<void>(
+        _sessionPath(sessionId, '/breakout-rooms/${encodeSegment(roomId)}'),
+        decoder: _ack,
+      ),
+    );
+  }
+
+  /// `POST /media/sessions/:sessionId/breakout-rooms/:roomId/participants/:participantId/move`
+  /// (W, U, H) — resolves to the assignment row.
+  Future<ApiResponse<MediaResource>> move(
+    String sessionId,
+    String roomId,
+    String participantId,
+  ) {
+    return withMediaErrors(
       () => _client.post<MediaResource>(
-        _sessionPath(sessionId, 'speaker-queue'),
+        _sessionPath(
+          sessionId,
+          '/breakout-rooms/${encodeSegment(roomId)}'
+          '/participants/${encodeSegment(participantId)}/move',
+        ),
+        decoder: _resource,
+      ),
+    );
+  }
+
+  /// `POST /media/sessions/:sessionId/breakout-rooms/participants/:participantId/return`
+  /// (W, U, H) — returns one participant to the main session.
+  Future<ApiResponse<void>> returnToMain(
+    String sessionId,
+    String participantId,
+  ) {
+    return withMediaErrors(
+      () => _client.post<void>(
+        _sessionPath(
+          sessionId,
+          '/breakout-rooms/participants/${encodeSegment(participantId)}/return',
+        ),
+        decoder: _ack,
+      ),
+    );
+  }
+}
+
+// ── Waiting room ────────────────────────────────────────────────────────────
+
+/// The waiting room. Participants enter it through `sessions.join`
+/// (`admission = waiting`); there is no separate enqueue call.
+///
+/// Exposed at `superso.media.waitingRoom`.
+class MediaWaitingRoomModule {
+  /// Creates a waiting-room module.
+  MediaWaitingRoomModule(this._client, this._tokens);
+
+  final SupersoHttpClient _client;
+  final MediaParticipantTokens _tokens;
+
+  /// `GET /media/sessions/:sessionId/waiting-room/queue` (R, U, H) —
+  /// `{entries, total}`, decoded as the ordered entries (each embeds its
+  /// participant).
+  Future<ApiResponse<List<MediaWaitingEntry>>> queue(String sessionId) {
+    return withMediaErrors(
+      () => _client.get<List<MediaWaitingEntry>>(
+        _sessionPath(sessionId, '/waiting-room/queue'),
+        decoder: (data) => _jsonList(_json(data)['entries'])
+            .map(MediaWaitingEntry.fromJson)
+            .toList(growable: false),
+      ),
+    );
+  }
+
+  /// `GET /media/sessions/:sessionId/waiting-room/:entryId` (R; P for the
+  /// entry's own participant, or U + H) — poll your own admission status.
+  /// Sends the session's stored participant token unless [participantToken]
+  /// is given.
+  Future<ApiResponse<MediaWaitingEntry>> status(
+    String sessionId,
+    String entryId, {
+    String? participantToken,
+  }) {
+    return withMediaErrors(
+      () => _client.get<MediaWaitingEntry>(
+        _sessionPath(sessionId, '/waiting-room/${encodeSegment(entryId)}'),
+        options: _asParticipant(
+          participantToken ?? _tokens.forSession(sessionId),
+        ),
+        decoder: _waitingEntry,
+      ),
+    );
+  }
+
+  /// `POST /media/sessions/:sessionId/waiting-room/:entryId/admit` (W, U, H).
+  Future<ApiResponse<MediaWaitingEntry>> admit(
+    String sessionId,
+    String entryId, {
+    String? reason,
+  }) =>
+      _decide(sessionId, entryId, 'admit', reason);
+
+  /// `POST /media/sessions/:sessionId/waiting-room/:entryId/reject`
+  /// (W, U, H).
+  Future<ApiResponse<MediaWaitingEntry>> reject(
+    String sessionId,
+    String entryId, {
+    String? reason,
+  }) =>
+      _decide(sessionId, entryId, 'reject', reason);
+
+  /// `POST /media/sessions/:sessionId/waiting-room/:entryId/ban` (W, U, H) —
+  /// sticky ban of the entry's participant.
+  Future<ApiResponse<MediaWaitingEntry>> ban(
+    String sessionId,
+    String entryId, {
+    String? reason,
+  }) =>
+      _decide(sessionId, entryId, 'ban', reason);
+
+  /// `POST /media/sessions/:sessionId/waiting-room/admit-all` (W, U, H) —
+  /// resolves to the number admitted (`{admitted}`).
+  Future<ApiResponse<int>> admitAll(String sessionId) {
+    return withMediaErrors(
+      () => _client.post<int>(
+        _sessionPath(sessionId, '/waiting-room/admit-all'),
+        decoder: (data) => (_json(data)['admitted'] as num?)?.toInt() ?? 0,
+      ),
+    );
+  }
+
+  Future<ApiResponse<MediaWaitingEntry>> _decide(
+    String sessionId,
+    String entryId,
+    String decision,
+    String? reason,
+  ) {
+    return withMediaErrors(
+      () => _client.post<MediaWaitingEntry>(
+        _sessionPath(
+          sessionId,
+          '/waiting-room/${encodeSegment(entryId)}/$decision',
+        ),
+        body: _reasonBody(reason),
+        decoder: _waitingEntry,
+      ),
+    );
+  }
+}
+
+// ── Speaker queue ───────────────────────────────────────────────────────────
+
+/// The speaker queue.
+///
+/// Exposed at `superso.media.speakerQueue`.
+class MediaSpeakerQueueModule {
+  /// Creates a speaker-queue module.
+  MediaSpeakerQueueModule(this._client, this._tokens);
+
+  final SupersoHttpClient _client;
+  final MediaParticipantTokens _tokens;
+
+  /// `GET /media/sessions/:sessionId/speaker-queue` (R) —
+  /// `{session_id, entries, total}`.
+  Future<ApiResponse<MediaSpeakerQueue>> list(String sessionId) {
+    return withMediaErrors(
+      () => _client.get<MediaSpeakerQueue>(
+        _sessionPath(sessionId, '/speaker-queue'),
+        decoder: (data) => MediaSpeakerQueue.fromJson(_json(data)),
+      ),
+    );
+  }
+
+  /// `POST /media/sessions/:sessionId/speaker-queue` (W, P) — body
+  /// `{participant_id, reason?}`; you can only enqueue yourself.
+  Future<ApiResponse<MediaSpeakerQueueEntry>> join(
+    String sessionId,
+    String participantId, {
+    String? reason,
+    String? participantToken,
+  }) {
+    return withMediaErrors(
+      () => _client.post<MediaSpeakerQueueEntry>(
+        _sessionPath(sessionId, '/speaker-queue'),
         body: <String, dynamic>{
           'participant_id': participantId,
           if (reason != null) 'reason': reason,
         },
-        decoder: _resource,
+        options: _asParticipant(
+          participantToken ?? _tokens.forParticipant(participantId),
+        ),
+        decoder: _speakerEntry,
       ),
     );
   }
 
-  /// `DELETE /sessions/:sessionId/speaker-queue/:participantId` — leaves the
-  /// queue.
-  Future<ApiResponse<void>> leaveSpeakerQueue(
+  /// `DELETE /media/sessions/:sessionId/speaker-queue/:participantId`
+  /// (W, P or U + H) — the participant leaves, or a host removes them.
+  Future<ApiResponse<void>> leave(
     String sessionId,
-    String participantId,
-  ) {
+    String participantId, {
+    String? participantToken,
+  }) {
     return withMediaErrors(
       () => _client.delete<void>(
         _sessionPath(
           sessionId,
-          'speaker-queue/${encodeSegment(participantId)}',
+          '/speaker-queue/${encodeSegment(participantId)}',
         ),
-        decoder: (_) {},
-      ),
-    );
-  }
-
-}
-
-/// Voice rooms.
-///
-/// Exposed at `superso.media.voiceRooms`.
-///
-/// The backend confirms an SDK REST subset of 8 routes
-/// (`sdk_media_routes.go`): create, list, get, start, end, participants,
-/// raise-hand, lower-hand.
-///
-/// `update`, `transferHost`, `promote`, `demote`, `mute`, `unmute`,
-/// `acceptHand`, `rejectHand`, `addModerator`, and `removeModerator` are
-/// documented under the Admin REST API only (`media_routes.go`, JWT auth) —
-/// the SDK router does not register them, so they are intentionally not
-/// implemented here to avoid shipping a method that would 404.
-class MediaVoiceRoomsModule {
-  /// Creates a voice-rooms module bound to [client].
-  const MediaVoiceRoomsModule(this._client);
-
-  final SupersoHttpClient _client;
-
-  /// `GET /v1/media/voice-rooms`
-  Future<ApiResponse<List<MediaResource>>> list({int? limit, int? offset}) {
-    return withMediaErrors(
-      () => _client.get<List<MediaResource>>(
-        '/media/voice-rooms',
-        options: RequestOptions(
-          query: <String, Object?>{'limit': limit, 'offset': offset},
+        options: _asParticipant(
+          participantToken ?? _tokens.forParticipant(participantId),
         ),
-        decoder: (data) => _resourceList(data, 'voice_rooms'),
+        decoder: _ack,
       ),
     );
   }
 
-  /// `POST /v1/media/voice-rooms`
-  Future<ApiResponse<MediaResource>> create({
-    required String title,
-    String? roomType,
-    Map<String, dynamic>? settings,
-  }) {
-    return withMediaErrors(
-      () => _client.post<MediaResource>(
-        '/media/voice-rooms',
-        body: <String, dynamic>{
-          'title': title,
-          if (roomType != null) 'room_type': roomType,
-          if (settings != null) ...settings,
-        },
-        decoder: _resource,
-      ),
-    );
-  }
-
-  /// `GET /v1/media/voice-rooms/:roomId`
-  Future<ApiResponse<MediaResource>> get(String roomId) {
-    return withMediaErrors(
-      () => _client.get<MediaResource>(
-        '/media/voice-rooms/${encodeSegment(roomId)}',
-        decoder: _resource,
-      ),
-    );
-  }
-
-  /// `POST /v1/media/voice-rooms/:roomId/start`
-  Future<ApiResponse<MediaResource>> start(String roomId) {
-    return withMediaErrors(
-      () => _client.post<MediaResource>(
-        '/media/voice-rooms/${encodeSegment(roomId)}/start',
-        decoder: _resource,
-      ),
-    );
-  }
-
-  /// `POST /v1/media/voice-rooms/:roomId/end`
-  Future<ApiResponse<MediaResource>> end(String roomId) {
-    return withMediaErrors(
-      () => _client.post<MediaResource>(
-        '/media/voice-rooms/${encodeSegment(roomId)}/end',
-        decoder: _resource,
-      ),
-    );
-  }
-
-  /// `GET /v1/media/voice-rooms/:roomId/participants`
-  Future<ApiResponse<MediaParticipantList>> participants(String roomId) {
-    return withMediaErrors(
-      () => _client.get<MediaParticipantList>(
-        '/media/voice-rooms/${encodeSegment(roomId)}/participants',
-        decoder: (data) => MediaParticipantList.fromJson(
-          data as Map<String, dynamic>? ?? const <String, dynamic>{},
-        ),
-      ),
-    );
-  }
-
-  /// `POST /voice-rooms/:roomId/participants/:participantId/raise-hand`
-  Future<ApiResponse<MediaParticipant>> raiseHand(
-    String roomId,
-    String participantId,
-  ) {
-    return withMediaErrors(
-      () => _client.post<MediaParticipant>(
-        '/media/voice-rooms/${encodeSegment(roomId)}'
-        '/participants/${encodeSegment(participantId)}/raise-hand',
-        decoder: _participant,
-      ),
-    );
-  }
-
-  /// `POST /voice-rooms/:roomId/participants/:participantId/lower-hand`
-  Future<ApiResponse<MediaParticipant>> lowerHand(
-    String roomId,
-    String participantId,
-  ) {
-    return withMediaErrors(
-      () => _client.post<MediaParticipant>(
-        '/media/voice-rooms/${encodeSegment(roomId)}'
-        '/participants/${encodeSegment(participantId)}/lower-hand',
-        decoder: _participant,
-      ),
-    );
-  }
-}
-
-/// Breakout rooms and the waiting room.
-///
-/// Exposed at `superso.media.rooms`.
-///
-/// Breakout rooms are read-only from the SDK: creating, closing, and moving
-/// participants between them is Admin-Dashboard-only.
-class MediaRoomsModule {
-  /// Creates a rooms module bound to [client].
-  const MediaRoomsModule(this._client);
-
-  final SupersoHttpClient _client;
-
-  /// `GET /sessions/:sessionId/breakout-rooms` — open rooms.
-  Future<ApiResponse<List<MediaResource>>> listBreakoutRooms(
-    String sessionId,
-  ) {
-    return withMediaErrors(
-      () => _client.get<List<MediaResource>>(
-        _sessionPath(sessionId, 'breakout-rooms'),
-        decoder: (data) => _resourceList(data, 'rooms'),
-      ),
-    );
-  }
-
-  /// `GET /sessions/:sessionId/breakout-rooms/:roomId`
-  Future<ApiResponse<MediaResource>> getBreakoutRoom(
-    String sessionId,
-    String roomId,
-  ) {
-    return withMediaErrors(
-      () => _client.get<MediaResource>(
-        _sessionPath(sessionId, 'breakout-rooms/${encodeSegment(roomId)}'),
-        decoder: _resource,
-      ),
-    );
-  }
-
-  /// `POST /sessions/:sessionId/waiting-room` — joins the waiting queue.
-  Future<ApiResponse<MediaResource>> enqueueWaitingRoom(
+  /// `POST /media/sessions/:sessionId/speaker-queue/promote` (W, U, H) —
+  /// promotes [entryId], or the next entry when omitted.
+  Future<ApiResponse<MediaSpeakerQueueEntry>> promote(
     String sessionId, {
-    required String participantId,
+    String? entryId,
   }) {
     return withMediaErrors(
-      () => _client.post<MediaResource>(
-        _sessionPath(sessionId, 'waiting-room'),
-        body: <String, dynamic>{'participant_id': participantId},
-        decoder: _resource,
+      () => _client.post<MediaSpeakerQueueEntry>(
+        _sessionPath(sessionId, '/speaker-queue/promote'),
+        body: <String, dynamic>{if (entryId != null) 'entry_id': entryId},
+        decoder: _speakerEntry,
       ),
     );
   }
 
-  /// `GET /sessions/:sessionId/waiting-room/:entryId` — queue position and
-  /// status.
-  Future<ApiResponse<MediaResource>> getWaitingRoomEntry(
+  /// `POST /media/sessions/:sessionId/speaker-queue/entries/:entryId/end`
+  /// (W, U, H) — ends the current turn.
+  Future<ApiResponse<void>> endTurn(String sessionId, String entryId) {
+    return withMediaErrors(
+      () => _client.post<void>(
+        _sessionPath(
+          sessionId,
+          '/speaker-queue/entries/${encodeSegment(entryId)}/end',
+        ),
+        decoder: _ack,
+      ),
+    );
+  }
+
+  /// `DELETE /media/sessions/:sessionId/speaker-queue/entries/:entryId`
+  /// (W, U, H) — removes an entry from the queue.
+  Future<ApiResponse<void>> remove(String sessionId, String entryId) {
+    return withMediaErrors(
+      () => _client.delete<void>(
+        _sessionPath(
+          sessionId,
+          '/speaker-queue/entries/${encodeSegment(entryId)}',
+        ),
+        decoder: _ack,
+      ),
+    );
+  }
+
+  /// `PATCH /media/sessions/:sessionId/speaker-queue/entries/:entryId/priority`
+  /// (W, U, H) — body `{priority}`.
+  Future<ApiResponse<void>> setPriority(
     String sessionId,
     String entryId,
+    int priority,
   ) {
     return withMediaErrors(
-      () => _client.get<MediaResource>(
-        _sessionPath(sessionId, 'waiting-room/${encodeSegment(entryId)}'),
-        decoder: _resource,
+      () => _client.patch<void>(
+        _sessionPath(
+          sessionId,
+          '/speaker-queue/entries/${encodeSegment(entryId)}/priority',
+        ),
+        body: <String, dynamic>{'priority': priority},
+        decoder: _ack,
+      ),
+    );
+  }
+}
+
+// ── Attendance ──────────────────────────────────────────────────────────────
+
+/// Attendance.
+///
+/// Exposed at `superso.media.attendance`.
+class MediaAttendanceModule {
+  /// Creates an attendance module.
+  const MediaAttendanceModule(this._client);
+
+  final SupersoHttpClient _client;
+
+  /// `GET /media/sessions/:sessionId/attendance` (R, U, H) —
+  /// `{summary, total}`, decoded as the per-participant summary rows.
+  Future<ApiResponse<List<MediaResource>>> summary(String sessionId) {
+    return withMediaErrors(
+      () => _client.get<List<MediaResource>>(
+        _sessionPath(sessionId, '/attendance'),
+        decoder: (data) => _jsonList(_json(data)['summary'])
+            .map(MediaResource.fromJson)
+            .toList(growable: false),
       ),
     );
   }
 
+  /// `GET /media/sessions/:sessionId/attendance/events` (R, U, H) —
+  /// paginated attendance records.
+  Future<ApiResponse<MediaPage<MediaResource>>> events(
+    String sessionId, {
+    int? limit,
+    int? offset,
+  }) {
+    return withMediaErrors(
+      () => _client.get<MediaPage<MediaResource>>(
+        _sessionPath(sessionId, '/attendance/events'),
+        options: RequestOptions(query: _pageQuery(limit, offset)),
+        decoder: _resourcePage,
+      ),
+    );
+  }
 }
+
+// ── Signaling roles ─────────────────────────────────────────────────────────
+
+/// Publisher-role signaling (`GET /media/signal?role=publisher`, R).
+///
+/// Exposed at `superso.media.publishers`. Transport only: the host app's
+/// WebRTC plugin drives the peer connection. Apply
+/// `MediaSignalingReady.mediaConstraints` to capture/encodings and never
+/// enable simulcast (single-layer SFU). Label each published track with
+/// [MediaSignalingConnection.sendTrackInfo].
+class MediaPublishersModule {
+  /// Creates a publishers module sharing [tokens].
+  MediaPublishersModule(this._client, this._tokens);
+
+  final SupersoHttpClient _client;
+  final MediaParticipantTokens _tokens;
+
+  /// The signaling connection opened by [join].
+  late final MediaSignalingConnection connection =
+      MediaSignalingConnection(_client, tokens: _tokens);
+
+  /// Opens the publisher socket for [sessionId]. The participant token
+  /// stored by `sessions.join` is used unless [participantToken] is given;
+  /// pass `MediaJoinResult.breakoutRoomId` as [breakoutRoomId] when assigned
+  /// to a breakout room.
+  Future<MediaSignalingConnection> join(
+    String sessionId, {
+    String? participantToken,
+    String? breakoutRoomId,
+    String? displayName,
+    String? platform,
+    String? sdkVersion,
+    String? appVersion,
+    String? networkType,
+  }) async {
+    await connection.connect(
+      sessionId,
+      SignalingRole.publisher,
+      participantToken: participantToken,
+      breakoutRoomId: breakoutRoomId,
+      displayName: displayName,
+      platform: platform,
+      sdkVersion: sdkVersion,
+      appVersion: appVersion,
+      networkType: networkType,
+    );
+    return connection;
+  }
+
+  /// Closes the publisher socket (no automatic reconnect).
+  Future<void> leave() => connection.disconnect();
+}
+
+/// Subscriber-role signaling (`GET /media/signal?role=subscriber`, R).
+///
+/// Exposed at `superso.media.subscribers`.
+class MediaSubscribersModule {
+  /// Creates a subscribers module sharing [tokens].
+  MediaSubscribersModule(this._client, this._tokens);
+
+  final SupersoHttpClient _client;
+  final MediaParticipantTokens _tokens;
+
+  /// The signaling connection opened by [join].
+  late final MediaSignalingConnection connection =
+      MediaSignalingConnection(_client, tokens: _tokens);
+
+  /// Opens the subscriber socket for [sessionId]; see
+  /// [MediaPublishersModule.join].
+  Future<MediaSignalingConnection> join(
+    String sessionId, {
+    String? participantToken,
+    String? breakoutRoomId,
+    String? displayName,
+    String? platform,
+    String? sdkVersion,
+    String? appVersion,
+    String? networkType,
+  }) async {
+    await connection.connect(
+      sessionId,
+      SignalingRole.subscriber,
+      participantToken: participantToken,
+      breakoutRoomId: breakoutRoomId,
+      displayName: displayName,
+      platform: platform,
+      sdkVersion: sdkVersion,
+      appVersion: appVersion,
+      networkType: networkType,
+    );
+    return connection;
+  }
+
+  /// Closes the subscriber socket (no automatic reconnect).
+  Future<void> leave() => connection.disconnect();
+}
+
+// ── Composition root ────────────────────────────────────────────────────────
 
 /// The composition root for the Media module.
 ///
 /// ```dart
-/// // Host creates and starts a session
 /// final session = await superso.media.sessions.create(title: 'Standup');
 /// await superso.media.sessions.start(session.data.id);
 ///
-/// // Listen to everything happening in it
-/// superso.media.events(session.data.id).listen((frame) {
-///   print('${frame.event}');
-/// });
+/// // Admission: stores the participant token automatically.
+/// final join = await superso.media.sessions.join(session.data.id);
+/// if (join.data.isWaiting) { /* poll waitingRoom.status or listen */ }
 ///
-/// // Moderate (requires the host to be signed in)
-/// await superso.media.moderation.mute(sessionId, participantId);
+/// // Realtime events (catalogue in media_events.dart).
+/// superso.media.on(session.data.id, MediaParticipantEvents.joined)
+///     .listen((e) => print(e.asParticipant.displayName));
 ///
-/// // Publish: join the signaling socket, then drive your own WebRTC plugin
-/// final connection = await superso.media.publishers.join(session.data.id);
-/// connection.onReady.listen((ready) {
-///   // configure your RTCPeerConnection with ready.iceServers, add camera/mic
-///   // tracks, create an offer, then: connection.sendOffer(offer.sdp);
-/// });
-/// connection.onAnswer.listen((answer) { /* setRemoteDescription(answer) */ });
-/// connection.onIceCandidate.listen((c) { /* addIceCandidate(c) */ });
+/// // Signaling: drive your own WebRTC plugin over the connection.
+/// final conn = await superso.media.publishers.join(
+///   session.data.id,
+///   breakoutRoomId: join.data.breakoutRoomId,
+/// );
+/// conn.onReady.listen((ready) { /* ready.iceServers, ready.mediaConstraints */ });
 /// ```
 class MediaModule implements SdkModule, Disposable {
   /// Creates the media module bound to [client].
-  MediaModule(this.client)
-      : sessions = MediaSessionsModule(client),
-        participants = MediaParticipantsModule(client),
-        permissions = MediaPermissionsModule(client),
+  MediaModule(SupersoHttpClient client)
+      : this._(client, MediaParticipantTokens());
+
+  MediaModule._(this.client, this.tokens)
+      : sessions = MediaSessionsModule(client, tokens),
+        participants = MediaParticipantsModule(client, tokens),
+        permissions = MediaPermissionsModule(client, tokens),
         moderation = MediaModerationModule(client),
-        classroom = MediaClassroomModule(client),
-        voiceRooms = MediaVoiceRoomsModule(client),
-        rooms = MediaRoomsModule(client),
-        publishers = MediaPublishersModule(client),
-        subscribers = MediaSubscribersModule(client),
-        websocket = MediaSignalingConnection(client),
-        _client = client;
+        voiceRooms = MediaVoiceRoomsModule(client, tokens),
+        breakoutRooms = MediaBreakoutRoomsModule(client),
+        waitingRoom = MediaWaitingRoomModule(client, tokens),
+        speakerQueue = MediaSpeakerQueueModule(client, tokens),
+        attendance = MediaAttendanceModule(client),
+        publishers = MediaPublishersModule(client, tokens),
+        subscribers = MediaSubscribersModule(client, tokens),
+        websocket = MediaSignalingConnection(client, tokens: tokens);
 
   @override
   final SupersoHttpClient client;
 
-  final SupersoHttpClient _client;
+  /// Participant tokens issued by `join` (and signaling `ready`), shared by
+  /// every sub-module.
+  final MediaParticipantTokens tokens;
 
-  /// Session lifecycle.
+  /// Session lifecycle, admission and own-participant state.
   final MediaSessionsModule sessions;
 
-  /// Participant lookup, telemetry, and removal.
+  /// Project-wide participant lookup and telemetry.
   final MediaParticipantsModule participants;
 
-  /// Participant self-service permission requests.
+  /// Participant self-service and permission views.
   final MediaPermissionsModule permissions;
 
-  /// Host moderation. Requires an end-user access token.
+  /// Host moderation (end-user access token of a privileged participant).
   final MediaModerationModule moderation;
-
-  /// The classroom engine.
-  final MediaClassroomModule classroom;
 
   /// Voice rooms.
   final MediaVoiceRoomsModule voiceRooms;
 
-  /// Breakout rooms and the waiting room.
-  final MediaRoomsModule rooms;
+  /// Breakout rooms.
+  final MediaBreakoutRoomsModule breakoutRooms;
 
-  /// Publisher-role raw WebRTC signaling (docs/media.md §12).
+  /// The waiting room.
+  final MediaWaitingRoomModule waitingRoom;
+
+  /// The speaker queue.
+  final MediaSpeakerQueueModule speakerQueue;
+
+  /// Attendance.
+  final MediaAttendanceModule attendance;
+
+  /// Publisher-role signaling.
   final MediaPublishersModule publishers;
 
-  /// Subscriber-role raw WebRTC signaling (docs/media.md §13).
+  /// Subscriber-role signaling.
   final MediaSubscribersModule subscribers;
 
-  /// The raw WebRTC signaling transport (`GET /v1/media/signal`),
-  /// independent of [publishers]/[subscribers] — open it directly with
-  /// either role via [MediaSignalingConnection.connect].
+  /// A standalone signaling connection — open it with either role via
+  /// [MediaSignalingConnection.connect].
   final MediaSignalingConnection websocket;
 
   final Map<String, RealtimeSocket> _sockets = <String, RealtimeSocket>{};
 
-  /// `GET /v1/media/overview` — live statistics plus today's usage.
+  /// `GET /media/overview` (R) — live statistics plus today's usage.
   Future<ApiResponse<MediaResource>> overview() {
     return withMediaErrors(
-      () => _client.get<MediaResource>('/media/overview', decoder: _resource),
+      () => client.get<MediaResource>('/media/overview', decoder: _resource),
     );
   }
 
-  /// `GET /v1/media/usage` — daily usage metrics.
-  Future<ApiResponse<List<MediaResource>>> usage({int days = 30}) {
+  /// `GET /media/usage` (R) — `{usage, days}`, decoded as the daily usage
+  /// rows of the last [days] days.
+  Future<ApiResponse<List<MediaResource>>> usage({int? days}) {
     return withMediaErrors(
-      () => _client.get<List<MediaResource>>(
+      () => client.get<List<MediaResource>>(
         '/media/usage',
         options: RequestOptions(query: <String, Object?>{'days': days}),
-        decoder: (data) => _resourceList(data, 'usage'),
+        decoder: (data) => _jsonList(_json(data)['usage'])
+            .map(MediaResource.fromJson)
+            .toList(growable: false),
       ),
     );
   }
 
-  /// `GET /v1/media/settings` — the project's media settings.
-  Future<ApiResponse<MediaResource>> getSettings() {
+  /// `GET /media/settings` (R).
+  Future<ApiResponse<MediaSettings>> getSettings() {
     return withMediaErrors(
-      () => _client.get<MediaResource>('/media/settings', decoder: _resource),
-    );
-  }
-
-  /// `PUT /v1/media/settings` — updates the project's media settings.
-  Future<ApiResponse<MediaResource>> updateSettings(
-    Map<String, dynamic> settings,
-  ) {
-    return withMediaErrors(
-      () => _client.put<MediaResource>(
+      () => client.get<MediaSettings>(
         '/media/settings',
-        body: settings,
-        decoder: _resource,
+        decoder: (data) => MediaSettings.fromJson(_json(data)),
       ),
     );
   }
 
-  /// Every realtime event broadcast on a session's channel.
-  ///
-  /// The connection opens lazily on first listen and is shared by every
-  /// listener for that session. Event names are catalogued in
-  /// `media_events.dart`.
-  ///
-  /// ```dart
-  /// superso.media.events(sessionId)
-  ///     .where((f) => f.event == MediaParticipantEvents.joined)
-  ///     .listen((f) => print('joined: ${f.data}'));
-  /// ```
+  /// `PUT /media/settings` (**D** — requires a `delete`-scope, server-side
+  /// API key; never ship that key in a client app). Partial update: only
+  /// the fields you pass are sent.
+  Future<ApiResponse<MediaSettings>> updateSettings({
+    bool? enabled,
+    int? maxSessions,
+    int? maxPublishersPerSession,
+    int? maxParticipantsPerSession,
+    int? maxSessionDurationSec,
+    int? connectionTimeoutSec,
+    bool? voiceRoomsEnabled,
+    bool? webrtcEnabled,
+    List<String>? stunUrls,
+    bool? turnEnabled,
+    String? turnUrl,
+    String? turnUsername,
+    String? turnCredential,
+    int? maxVideoBitrateKbps,
+    int? maxAudioBitrateKbps,
+    String? defaultResolution,
+    int? defaultFps,
+    bool? noiseSuppression,
+    bool? echoCancellation,
+    bool? waitingRoomDefault,
+    bool? screenShareDefault,
+    bool? moderationEnabled,
+    bool? analyticsEnabled,
+    bool? auditEnabled,
+  }) {
+    return withMediaErrors(
+      () => client.put<MediaSettings>(
+        '/media/settings',
+        body: <String, dynamic>{
+          if (enabled != null) 'enabled': enabled,
+          if (maxSessions != null) 'max_sessions': maxSessions,
+          if (maxPublishersPerSession != null)
+            'max_publishers_per_session': maxPublishersPerSession,
+          if (maxParticipantsPerSession != null)
+            'max_participants_per_session': maxParticipantsPerSession,
+          if (maxSessionDurationSec != null)
+            'max_session_duration_sec': maxSessionDurationSec,
+          if (connectionTimeoutSec != null)
+            'connection_timeout_sec': connectionTimeoutSec,
+          if (voiceRoomsEnabled != null) 'voice_rooms_enabled': voiceRoomsEnabled,
+          if (webrtcEnabled != null) 'webrtc_enabled': webrtcEnabled,
+          if (stunUrls != null) 'stun_urls': stunUrls,
+          if (turnEnabled != null) 'turn_enabled': turnEnabled,
+          if (turnUrl != null) 'turn_url': turnUrl,
+          if (turnUsername != null) 'turn_username': turnUsername,
+          if (turnCredential != null) 'turn_credential': turnCredential,
+          if (maxVideoBitrateKbps != null)
+            'max_video_bitrate_kbps': maxVideoBitrateKbps,
+          if (maxAudioBitrateKbps != null)
+            'max_audio_bitrate_kbps': maxAudioBitrateKbps,
+          if (defaultResolution != null) 'default_resolution': defaultResolution,
+          if (defaultFps != null) 'default_fps': defaultFps,
+          if (noiseSuppression != null) 'noise_suppression': noiseSuppression,
+          if (echoCancellation != null) 'echo_cancellation': echoCancellation,
+          if (waitingRoomDefault != null)
+            'waiting_room_default': waitingRoomDefault,
+          if (screenShareDefault != null)
+            'screen_share_default': screenShareDefault,
+          if (moderationEnabled != null) 'moderation_enabled': moderationEnabled,
+          if (analyticsEnabled != null) 'analytics_enabled': analyticsEnabled,
+          if (auditEnabled != null) 'audit_enabled': auditEnabled,
+        },
+        decoder: (data) => MediaSettings.fromJson(_json(data)),
+      ),
+    );
+  }
+
+  /// Every realtime event on the session channel `media.<sessionId>`
+  /// (server-publish-only). Opens lazily on first listen; shared by every
+  /// listener of that session.
   Stream<MediaEvent> events(String sessionId) {
     final socket = _sockets.putIfAbsent(
       sessionId,
-      () => RealtimeSocket(_client, channel: 'media.$sessionId'),
+      () => RealtimeSocket(client, channel: 'media.$sessionId'),
     );
     return socket.messages.map(MediaEvent.fromJson);
   }
 
-  /// Events matching one event name on a session's channel.
+  /// Events named [eventName] on a session's channel.
   Stream<MediaEvent> on(String sessionId, String eventName) =>
       events(sessionId).where((e) => e.event == eventName);
 
@@ -1230,7 +2024,7 @@ class MediaEvent {
         data: json['data'],
       );
 
-  /// The event name. See the catalogues in `media_events.dart`.
+  /// The event name. See `MediaEvents.all`.
   final String event;
 
   /// The event payload.
@@ -1240,24 +2034,42 @@ class MediaEvent {
   final Map<String, dynamic> raw;
 
   /// The payload as a JSON map, or an empty map when it is not one.
-  ///
-  /// The `is` test is parenthesized deliberately: `x is Map<K, V> ? a : b`
-  /// is genuinely ambiguous to the Dart parser, which reads `Map<K, V>?` as a
-  /// nullable type and then fails on the rest of the conditional.
   Map<String, dynamic> get dataAsMap {
     final payload = data;
-    return payload is Map<String, dynamic>
+    return (payload is Map<String, dynamic>)
         ? payload
         : const <String, dynamic>{};
   }
 
-  /// The payload decoded as a participant.
-  ///
-  /// Only meaningful for participant-shaped events.
-  MediaParticipant get asParticipant => MediaParticipant.fromJson(dataAsMap);
+  /// `session_id` — present on every Media event.
+  String? get sessionId {
+    final value = dataAsMap['session_id'];
+    return value is String ? value : null;
+  }
 
-  /// The payload decoded as a session.
-  MediaSession get asSession => MediaSession.fromJson(dataAsMap);
+  /// `participant_id` — present on participant events.
+  String? get participantId {
+    final value = dataAsMap['participant_id'];
+    return value is String ? value : null;
+  }
+
+  /// The public participant view carried by participant events (the
+  /// `participant` field), falling back to the payload itself.
+  MediaParticipant get asParticipant {
+    final nested = dataAsMap['participant'];
+    return MediaParticipant.fromJson(
+      (nested is Map<String, dynamic>) ? nested : dataAsMap,
+    );
+  }
+
+  /// The session carried by `session_updated` / `voice_room.updated` (the
+  /// `session` field), falling back to the payload itself.
+  MediaSession get asSession {
+    final nested = dataAsMap['session'];
+    return MediaSession.fromJson(
+      (nested is Map<String, dynamic>) ? nested : dataAsMap,
+    );
+  }
 
   @override
   String toString() => 'MediaEvent($event)';

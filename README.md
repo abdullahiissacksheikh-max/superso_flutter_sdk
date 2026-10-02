@@ -320,6 +320,15 @@ which is the usual explanation for missing user-scoped events.
 final session = await superso.media.sessions.create(title: 'Standup');
 await superso.media.sessions.start(session.data.id);
 
+// Admission: the participant token is stored automatically and sent as
+// X-Media-Participant-Token on self-service calls and on signaling.
+final join = await superso.media.sessions.join(session.data.id);
+if (join.data.isWaiting) {
+  // In the waiting room until a host calls waitingRoom.admit(...)
+}
+await superso.media.permissions
+    .requestCamera(session.data.id, join.data.participant.id);
+
 // Realtime session events
 superso.media
     .on(session.data.id, MediaParticipantEvents.joined)
@@ -334,7 +343,10 @@ await superso.media.moderation
 // Publish: open the signaling socket, then drive your own WebRTC plugin
 // (e.g. flutter_webrtc) — this SDK does not bundle one, exactly like the
 // JS SDK. See docs/media.md §12 "Publisher Flow".
-final connection = await superso.media.publishers.join(session.data.id);
+final connection = await superso.media.publishers.join(
+  session.data.id,
+  breakoutRoomId: join.data.breakoutRoomId,
+);
 connection.onReady.listen((ready) {
   // Configure your RTCPeerConnection with ready.iceServers, add your
   // camera/microphone tracks, create an offer, then:
@@ -351,7 +363,9 @@ connection.onIceCandidate.listen((candidate) {
 > **Moderation needs a host, not just an API key.** Every method on
 > `media.moderation` requires an end-user access token belonging to that
 > session's host, teacher, co-host, or moderator. A caller without standing
-> gets a `HostAuthorizationError`. A session's creator becomes its host
+> gets a `HostAuthorizationError` (`MEDIA_NOT_HOST` /
+> `MEDIA_INSUFFICIENT_RANK`); every other failure is a `MediaError` whose
+> `code` is the backend's `MEDIA_*` code. A session's creator becomes its host
 > automatically on first join, provided they were signed in when it was
 > created.
 

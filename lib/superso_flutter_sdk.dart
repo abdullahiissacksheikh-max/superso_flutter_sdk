@@ -136,9 +136,10 @@ class Superso implements Disposable {
   /// Realtime — channels, presence, broadcast, and the database event bridge.
   late final RealtimeModule realtime;
 
-  /// Media — sessions, participants, moderation, voice rooms, classroom,
-  /// breakout rooms, raw WebRTC signaling (publishers/subscribers), and
-  /// realtime session events.
+  /// Media — sessions and admission, participants, self-service
+  /// permissions, host moderation, voice rooms, breakout rooms, waiting room,
+  /// speaker queue, attendance, raw WebRTC signaling
+  /// (publishers/subscribers), and realtime session events.
   late final MediaModule media;
 
   /// Notifications — send, broadcast, trigger, inbox, templates, schedules,

@@ -261,8 +261,8 @@ class BucketModule {
     );
   }
 
-  static StorageBucket _bucket(Object? data) =>
-      StorageBucket.fromJson(data as Map<String, dynamic>? ?? const <String, dynamic>{});
+  static StorageBucket _bucket(Object? data) => StorageBucket.fromJson(
+      data as Map<String, dynamic>? ?? const <String, dynamic>{});
 }
 
 /// File operations (`docs/storage.md` — Files).
@@ -410,8 +410,8 @@ class FileModule {
     }
   }
 
-  static StorageFile _file(Object? data) =>
-      StorageFile.fromJson(data as Map<String, dynamic>? ?? const <String, dynamic>{});
+  static StorageFile _file(Object? data) => StorageFile.fromJson(
+      data as Map<String, dynamic>? ?? const <String, dynamic>{});
 }
 
 /// Chunked/resumable upload sessions, for files over 100 MB.
@@ -497,8 +497,8 @@ class ChunkedUploadModule {
     }
   }
 
-  static UploadSession _session(Object? data) =>
-      UploadSession.fromJson(data as Map<String, dynamic>? ?? const <String, dynamic>{});
+  static UploadSession _session(Object? data) => UploadSession.fromJson(
+      data as Map<String, dynamic>? ?? const <String, dynamic>{});
 }
 
 /// A parsed frame received on the `storage` realtime channel.
@@ -572,10 +572,8 @@ class StorageModule implements SdkModule, Disposable {
   /// unsubscribe function would be redundant.
   /// Frames that do not parse into a known storage event are dropped, so a
   /// future backend event type never breaks an existing listener.
-  Stream<StorageRealtimeMessage> get events => _socket.messages
-      .map(_parse)
-      .where((m) => m != null)
-      .map((m) => m!);
+  Stream<StorageRealtimeMessage> get events =>
+      _socket.messages.map(_parse).where((m) => m != null).map((m) => m!);
 
   /// Files that finished uploading.
   Stream<StorageFile> get onUploaded => events

@@ -336,11 +336,11 @@ class InboxModule {
     );
   }
 
-  static InboxList _inboxList(Object? data) =>
-      InboxList.fromJson(data as Map<String, dynamic>? ?? const <String, dynamic>{});
+  static InboxList _inboxList(Object? data) => InboxList.fromJson(
+      data as Map<String, dynamic>? ?? const <String, dynamic>{});
 
-  static InboxItem _inboxItem(Object? data) =>
-      InboxItem.fromJson(data as Map<String, dynamic>? ?? const <String, dynamic>{});
+  static InboxItem _inboxItem(Object? data) => InboxItem.fromJson(
+      data as Map<String, dynamic>? ?? const <String, dynamic>{});
 }
 
 /// Template management.
@@ -456,7 +456,8 @@ class TemplatesModule {
   }
 
   static NotificationTemplate _template(Object? data) =>
-      NotificationTemplate.fromJson(data as Map<String, dynamic>? ?? const <String, dynamic>{});
+      NotificationTemplate.fromJson(
+          data as Map<String, dynamic>? ?? const <String, dynamic>{});
 }
 
 /// Event management — docs/notification.md "Events".
@@ -542,7 +543,8 @@ class EventsModule {
           if (category != null) 'category': category,
           if (isActive != null) 'is_active': isActive,
           if (templates != null)
-            'templates': templates.map((t) => t.toJson()).toList(growable: false),
+            'templates':
+                templates.map((t) => t.toJson()).toList(growable: false),
         },
         decoder: _event,
       ),
@@ -571,7 +573,8 @@ class EventsModule {
           if (category != null) 'category': category,
           if (isActive != null) 'is_active': isActive,
           if (templates != null)
-            'templates': templates.map((t) => t.toJson()).toList(growable: false),
+            'templates':
+                templates.map((t) => t.toJson()).toList(growable: false),
         },
         decoder: _event,
       ),
@@ -602,7 +605,8 @@ class EventsModule {
           'templates': templates.map((t) => t.toJson()).toList(growable: false),
         },
         decoder: (data) {
-          final map = data as Map<String, dynamic>? ?? const <String, dynamic>{};
+          final map =
+              data as Map<String, dynamic>? ?? const <String, dynamic>{};
           final items = map['items'] as List<dynamic>? ?? const <dynamic>[];
           return items
               .whereType<Map<String, dynamic>>()
@@ -649,8 +653,8 @@ class EventsModule {
     );
   }
 
-  static NotificationEvent _event(Object? data) =>
-      NotificationEvent.fromJson(data as Map<String, dynamic>? ?? const <String, dynamic>{});
+  static NotificationEvent _event(Object? data) => NotificationEvent.fromJson(
+      data as Map<String, dynamic>? ?? const <String, dynamic>{});
 }
 
 /// Schedule management.
@@ -787,7 +791,8 @@ class SchedulesModule {
   }
 
   static NotificationSchedule _schedule(Object? data) =>
-      NotificationSchedule.fromJson(data as Map<String, dynamic>? ?? const <String, dynamic>{});
+      NotificationSchedule.fromJson(
+          data as Map<String, dynamic>? ?? const <String, dynamic>{});
 }
 
 /// Delivery queue inspection.
@@ -862,8 +867,8 @@ class QueueModule {
     return withNotificationErrors(
       () => _client.get<QueueItem>(
         '/notifications/queue/${encodeSegment(id)}',
-        decoder: (data) =>
-            QueueItem.fromJson(data as Map<String, dynamic>? ?? const <String, dynamic>{}),
+        decoder: (data) => QueueItem.fromJson(
+            data as Map<String, dynamic>? ?? const <String, dynamic>{}),
       ),
     );
   }
@@ -1041,7 +1046,8 @@ class DevicesModule {
   }
 
   static NotificationDevice _device(Object? data) =>
-      NotificationDevice.fromJson(data as Map<String, dynamic>? ?? const <String, dynamic>{});
+      NotificationDevice.fromJson(
+          data as Map<String, dynamic>? ?? const <String, dynamic>{});
 }
 
 /// Per-user notification preferences.

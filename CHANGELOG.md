@@ -2,6 +2,31 @@
 
 All notable changes to `superso_flutter_sdk` are documented in this file.
 
+## 0.4.0
+
+**Media Engine v0.4.0 contract**, mirroring `supersosdk` 0.4.0. `lib/src/media` now maps 1:1 onto `backend/internal/modules/media/api/routes.go` (SDK router `/v1/media`): every one of the 105 REST routes has exactly one SDK method and every SDK method has a registered route. Breaking for Media callers.
+
+Added:
+
+- Participant tokens (`MediaParticipantTokens`): `sessions.join()` / `voiceRooms.join()` store the issued token; participant-scoped calls send it as `X-Media-Participant-Token`; signaling sends it as `participant_token`; `join()` resumes with it.
+- Sessions: `update()`, `join()`, `getParticipant()`, `leave()`, `updateMediaState()`, `timeline()`, `tracks()`, `speakers()`, `cancel()`; permissions `listRequests()` / `audit()`; participant list filters and the `{items,total,limit,offset,has_more}` page envelope (`MediaPage`).
+- Moderation: the full host set incl. `forceMute`, `clearForceMute`, `assignRole`, `kick`, `ban`; permissions: request/cancel/accept/decline/stop-screen-share self-service returning `{participant, request?}`.
+- Voice rooms: `update()`, `transferHost()`, `join()`, raise/lower hand and every host action.
+- Waiting room (`queue`, `status`, `admit`, `reject`, `ban`, `admitAll`), breakout rooms (full host set incl. `closeAll`, `returnToMain`), speaker queue and attendance modules.
+- Signaling: `ready` metadata, `track_info`, `disconnect` frames with the v0.4.0 reconnect rules (no reconnect after `MEDIA_KICKED`/`MEDIA_BANNED`/`MEDIA_SESSION_ENDED`/`MEDIA_LEFT`; breakout re-routing on `MEDIA_BREAKOUT_MOVED`/`MEDIA_BREAKOUT_CLOSED`).
+- Events: `MediaEvents.all` equals the backend `AllEvents` (77 names, incl. the nine permission decisions in `MediaEvents.permissionDecisions`).
+- Errors carry the backend `MEDIA_*` code (`MediaErrorCodes`); `MEDIA_NOT_HOST` / `MEDIA_INSUFFICIENT_RANK` raise `HostAuthorizationError`.
+
+Changed:
+
+- `permissions.cancelRequest()` rejects `MediaRequestType.speaking` (legacy value only).
+
+Removed:
+
+- `MediaClassroomModule` (use attendance / speaker queue), session-level raise/lower hand and `requestScreenShare` (use the permission self-service calls), waiting-room enqueue (use `join`), stage-v007 events (`stage.*`), `classroom.*` events, `publisher_joined`, `subscriber_joined`, `permissions_updated`, `participant_permission_updated`; settings `simulcast_enabled`, `adaptive_bitrate_enabled`; removed session fields (`reactions_enabled`, `polls_enabled`, `classroom_mode`, `stage_locked`, `speaker_timer_seconds`, `spatial_audio_enabled`).
+
+Verification note: no Dart/Flutter toolchain could be installed in the build environment (see `docs/internal/MEDIA_ENGINE_FINAL_AUDIT.md`); route and event parity were verified by static analysis against the backend route inventory, and `dart analyze` / `flutter test` must be run before publishing.
+
 ## 0.3.12
 
 **Public Media endpoint synchronization audit**, mirroring `supersosdk` 0.3.12. Every active Media feature's documented endpoint set was inventoried against `docs/media.md`, the backend routers, and this SDK. One real gap was found and fixed; everything else already matched exactly.

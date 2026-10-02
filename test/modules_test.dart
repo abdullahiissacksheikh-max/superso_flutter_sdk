@@ -308,9 +308,10 @@ void main() {
       addTearDown(h.superso.dispose);
     });
 
-    test('a 403 on moderation becomes HostAuthorizationError', () async {
+    test('MEDIA_NOT_HOST on moderation becomes HostAuthorizationError',
+        () async {
       final h = harness(
-        (_) async => fail(403, 'FORBIDDEN', 'not a host'),
+        (_) async => fail(403, 'MEDIA_NOT_HOST', 'not a host'),
       );
       await expectLater(
         h.superso.media.moderation.pin('s1', 'p1'),
@@ -344,7 +345,6 @@ void main() {
       expect(ClassroomRole.viewer.isPrivileged, isFalse);
       expect(ClassroomRole.guest.isPrivileged, isFalse);
     });
-
   });
 
   group('NotificationModule', () {
