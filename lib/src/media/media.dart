@@ -5,5 +5,6 @@ export 'media_errors.dart';
 export 'media_events.dart';
 export 'media_module.dart';
 export 'media_signaling.dart';
+export 'media_state_control.dart';
 export 'media_tokens.dart';
 export 'media_types.dart';

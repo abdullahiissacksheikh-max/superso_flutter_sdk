@@ -82,7 +82,11 @@ class Superso implements Disposable {
   /// idempotent verbs — see [RetryPolicy]. Supply [logger] to observe SDK
   /// diagnostics; nothing is logged when it is null.
   ///
-  /// [httpClient] exists for tests, which can inject a mock transport.
+  /// [httpClient] exists for tests, which can inject a mock transport. When
+  /// one is injected, its [SupersoHttpClient.config] becomes [config] — a
+  /// single source of truth for tokens and headers. (Previously a second,
+  /// unrelated config was built here, so `setAccessToken()` never reached the
+  /// injected client.)
   Superso({
     required String baseUrl,
     String? apiKey,
@@ -93,7 +97,8 @@ class Superso implements Disposable {
     RetryPolicy retryPolicy = const RetryPolicy(),
     SupersoLogger? logger,
     SupersoHttpClient? httpClient,
-  })  : config = SupersoConfig(
+  })  : config = httpClient?.config ??
+            SupersoConfig(
           baseUrl: baseUrl,
           apiKey: apiKey,
           accessToken: accessToken,

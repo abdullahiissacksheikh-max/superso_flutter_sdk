@@ -55,12 +55,16 @@ class SupersoError implements Exception {
 }
 
 /// Request payload failed validation (HTTP 400 / 422).
+///
+/// [status] is the real HTTP status (400 or 422) so modules that give 422 a
+/// specific meaning (Payment: gateway not configured) can still tell them
+/// apart; it defaults to 400 for client-side validation failures.
 class ValidationError extends SupersoError {
   /// Creates a validation error.
-  const ValidationError(String message, [Object? details])
+  const ValidationError(String message, [Object? details, int status = 400])
       : super(
           message: message,
-          status: 400,
+          status: status,
           code: 'VALIDATION_ERROR',
           details: details,
         );
@@ -178,7 +182,9 @@ class ServerError extends SupersoError {
 /// exclusively by the shared HTTP client so every module gets identical error
 /// handling. Mirrors `errorFromResponse` in the TypeScript SDK exactly.
 SupersoError errorFromResponse(int status, String message, [Object? details]) {
-  if (status == 400 || status == 422) return ValidationError(message, details);
+  if (status == 400 || status == 422) {
+    return ValidationError(message, details, status);
+  }
   if (status == 401) return AuthenticationError(message, details);
   if (status == 403) return PermissionError(message, details);
   if (status == 404) return NotFoundError(message, details);

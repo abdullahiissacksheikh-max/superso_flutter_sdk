@@ -2,6 +2,25 @@
 
 All notable changes to `superso_flutter_sdk` are documented in this file.
 
+## 0.5.0
+
+Minor release mirroring `supersosdk` 0.5.0: additive Media APIs plus fixes. One observable behaviour change — `ValidationError.status` reports 422 for a backend 422 (see Migration).
+
+Added:
+
+- `parseRemoteStreamId(streamId)` / `RemoteStreamIdentity` / `RemoteStreamKind` / `mediaScreenStreamSuffix`: the SFU forwards every track in a MediaStream whose id is the publisher's participant id (`<participant_id>`; screen share `<participant_id>-screen`). In `flutter_webrtc`'s `onTrack`, `parseRemoteStreamId(event.streams.first.id)` resolves the owner with no REST lookup.
+- `MediaDisconnectCodes.superseded` (`MEDIA_SUPERSEDED`): a newer connection of the same participant+role replaced this one; `decideSignalingReconnect` returns `SignalingReconnectAction.none`.
+- Media-state control lifecycle (`media_state_control.dart`, twin of `supersosdk` `src/media/controls.ts`): `MediaStateControl`, `MediaServerState` (+ `microphone` / `camera` / `screenShare` / `hostMute` row mappers), `MediaControlSnapshot`, `ScreenShareLifecycle` (with `ScreenShareLifecycleDeps` platform glue), `ServerConfirmation`, `SerialTask`. Purely client-side: no new endpoint or event. Screen capture itself is the app's (flutter_webrtc) and platform-dependent.
+
+Backend (no SDK change): the SFU now answers a publisher re-offer with RFC 3264-compatible directions (`inactive` for an m-line the client stopped sending on), so flutter_webrtc no longer rejects the answer after a screen share is stopped with `removeTrack`.
+
+Fixed:
+
+- `Superso(httpClient: ...)`: an injected client's `config` is now the instance's `config`, so `setAccessToken()` / token capture reach the injected client (previously a second, unrelated config was built).
+- `ValidationError.status` is now the real HTTP status (400 or 422), so `PaymentModule` maps a backend 422 to `GatewayNotConfiguredError` as documented.
+
+Migration: code that tested `error.status == 400` to detect a backend 422 must test `error is ValidationError` (or `status == 422`). Apps that mapped remote tracks to people via the device-chosen stream id must switch to `parseRemoteStreamId`.
+
 ## 0.4.0
 
 **Media Engine v0.4.0 contract**, mirroring `supersosdk` 0.4.0. `lib/src/media` now maps 1:1 onto `backend/internal/modules/media/api/routes.go` (SDK router `/v1/media`): every one of the 105 REST routes has exactly one SDK method and every SDK method has a registered route. Breaking for Media callers.

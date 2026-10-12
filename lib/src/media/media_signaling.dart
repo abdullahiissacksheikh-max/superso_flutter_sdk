@@ -71,6 +71,10 @@ abstract final class MediaDisconnectCodes {
   /// The participant left explicitly (`POST .../leave`).
   static const String left = 'MEDIA_LEFT';
 
+  /// A newer connection of the same participant replaced this one; never
+  /// auto-reconnect (the newer connection is the live one).
+  static const String superseded = 'MEDIA_SUPERSEDED';
+
   /// No frame within `connection_timeout_sec`.
   static const String connectionTimeout = 'MEDIA_CONNECTION_TIMEOUT';
 }
@@ -126,6 +130,7 @@ SignalingReconnectDecision decideSignalingReconnect({
     case MediaDisconnectCodes.banned:
     case MediaDisconnectCodes.sessionEnded:
     case MediaDisconnectCodes.left:
+    case MediaDisconnectCodes.superseded:
       return const SignalingReconnectDecision(SignalingReconnectAction.none);
     case MediaDisconnectCodes.publishRevoked:
       return role == SignalingRole.publisher
@@ -154,6 +159,93 @@ SignalingReconnectDecision decideSignalingReconnect({
         SignalingReconnectAction.reconnect,
       );
   }
+}
+
+/// Suffix the SFU appends to a participant id to form the MediaStream id of
+/// their screen-share stream.
+const String mediaScreenStreamSuffix = '-screen';
+
+/// Which of a participant's streams a remote track belongs to.
+enum RemoteStreamKind {
+  /// Camera and microphone (stream id `<participant_id>`).
+  main,
+
+  /// Screen share (stream id `<participant_id>-screen`).
+  screen,
+}
+
+/// Who owns a remote track, decoded from its MediaStream id.
+@immutable
+class RemoteStreamIdentity {
+  /// Creates an identity.
+  const RemoteStreamIdentity({required this.participantId, required this.stream});
+
+  /// The publishing participant (`MediaParticipant.id`, stable across
+  /// leave/rejoin).
+  final String participantId;
+
+  /// Main (camera + microphone) or screen stream.
+  final RemoteStreamKind stream;
+
+  @override
+  bool operator ==(Object other) =>
+      other is RemoteStreamIdentity &&
+      other.participantId == participantId &&
+      other.stream == stream;
+
+  @override
+  int get hashCode => Object.hash(participantId, stream);
+
+  @override
+  String toString() => 'RemoteStreamIdentity($participantId, ${stream.name})';
+}
+
+final RegExp _uuidRe = RegExp(
+  r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+  caseSensitive: false,
+);
+
+/// Identity travels with the media: the SFU rewrites the MediaStream id of
+/// every forwarded track to the PUBLISHER'S PARTICIPANT ID — camera and
+/// microphone arrive in stream `<participant_id>`, a screen share in
+/// `<participant_id>-screen`. The random stream id the publishing device
+/// chose is never forwarded. So in the subscriber `RTCPeerConnection`'s
+/// `onTrack` (flutter_webrtc `RTCTrackEvent.streams.first.id`):
+///
+/// ```dart
+/// pc.onTrack = (event) {
+///   final who = parseRemoteStreamId(event.streams.firstOrNull?.id);
+///   if (who != null) renderTile(who.participantId, who.stream, event.track);
+/// };
+/// ```
+///
+/// resolves the owner from the track alone — no REST lookup, no event race,
+/// and no stale mapping after a leave/rejoin (the participant id is stable;
+/// device track/stream ids are not). Pair it with `participants.get()` or the
+/// `participant_joined` / `participant_reconnected` realtime events (which
+/// carry the Auth-resolved `display_name`) to label the tile.
+///
+/// Returns `null` for anything that is not a Superso SFU stream id.
+RemoteStreamIdentity? parseRemoteStreamId(String? streamId) {
+  if (streamId == null || streamId.isEmpty) return null;
+  if (streamId.endsWith(mediaScreenStreamSuffix)) {
+    final id = streamId.substring(
+      0,
+      streamId.length - mediaScreenStreamSuffix.length,
+    );
+    return _uuidRe.hasMatch(id)
+        ? RemoteStreamIdentity(
+            participantId: id.toLowerCase(),
+            stream: RemoteStreamKind.screen,
+          )
+        : null;
+  }
+  return _uuidRe.hasMatch(streamId)
+      ? RemoteStreamIdentity(
+          participantId: streamId.toLowerCase(),
+          stream: RemoteStreamKind.main,
+        )
+      : null;
 }
 
 /// The `ready` frame, sent immediately after connect.
@@ -522,7 +614,15 @@ class MediaSignalingConnection {
       );
 
   /// Labels a published track (publisher role) so the SFU applies the right
-  /// server policy (camera vs screen permission).
+  /// server policy (camera vs screen permission). Send it BEFORE the offer
+  /// that adds the track: the forwarded stream id (`<participant_id>` vs
+  /// `<participant_id>-screen`) is fixed when the SFU receives the track.
+  ///
+  /// One publisher and one subscriber connection per participant: a newer
+  /// connection of the same role replaces the older one
+  /// ([MediaDisconnectCodes.superseded], terminal). Publish camera,
+  /// microphone and screen share on the same publisher `RTCPeerConnection`;
+  /// a second device of the same user takes over that user's media.
   void sendTrackInfo(String trackId, MediaTrackSource source) => _send(
         <String, dynamic>{
           'type': 'track_info',

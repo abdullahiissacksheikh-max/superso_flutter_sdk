@@ -658,6 +658,7 @@ const List<String> backendAllEvents = <String>[
 ];
 
 void main() {
+  _identityOnTheWire();
   group('Media routes (verb + path + headers + body)', () {
     for (final c in routeCases) {
       test('${c.method} ${c.path} <- ${c.name}', () async {
@@ -1033,6 +1034,7 @@ void main() {
         MediaDisconnectCodes.banned,
         MediaDisconnectCodes.sessionEnded,
         MediaDisconnectCodes.left,
+        MediaDisconnectCodes.superseded,
       ]) {
         for (final role in SignalingRole.values) {
           expect(decide(code, role: role).action,
@@ -1166,3 +1168,45 @@ void main() {
     });
   });
 }
+
+void _identityOnTheWire() {
+  group('parseRemoteStreamId (SFU stream id → participant)', () {
+    const pid = '5f1c2b3a-0000-4000-8000-000000000001';
+    test('main and screen streams resolve to the owning participant', () {
+      expect(
+        parseRemoteStreamId(pid),
+        const RemoteStreamIdentity(
+          participantId: pid,
+          stream: RemoteStreamKind.main,
+        ),
+      );
+      expect(
+        parseRemoteStreamId('$pid$mediaScreenStreamSuffix'),
+        const RemoteStreamIdentity(
+          participantId: pid,
+          stream: RemoteStreamKind.screen,
+        ),
+      );
+      expect(
+        parseRemoteStreamId(pid.toUpperCase()),
+        const RemoteStreamIdentity(
+          participantId: pid,
+          stream: RemoteStreamKind.main,
+        ),
+      );
+    });
+    test('non-SFU stream ids are rejected', () {
+      for (final bad in <String?>[
+        null,
+        '',
+        '{b7e3c2d4-browser-stream-1}',
+        'alice-main',
+        'not-a-uuid-screen',
+        '5f1c2b3a-0000-4000-8000-00000000000-screen',
+      ]) {
+        expect(parseRemoteStreamId(bad), isNull, reason: 'expected null for $bad');
+      }
+    });
+  });
+}
+
